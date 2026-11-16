@@ -22,6 +22,10 @@ pub trait File: Send + Sync {
     fn seek_to(&self, _pos: isize) -> isize {
         -1
     }
+    /// 修改文件长度（truncate/ftruncate），返回 0 成功
+    fn set_len(&self, _len: usize) -> isize {
+        0
+    }
 }
 
 pub use inode::{is_unlinked, list_apps, mark_unlinked, open_file, root_names, OSInode, OpenFlags};
@@ -106,6 +110,15 @@ impl File for OverlayFile {
     }
     fn size(&self) -> usize {
         self.data.exclusive_access().len()
+    }
+    fn set_len(&self, len: usize) -> isize {
+        let mut data = self.data.exclusive_access();
+        if len < data.len() {
+            data.truncate(len);
+        } else if len > data.len() {
+            data.resize(len, 0);
+        }
+        0
     }
     fn seek_to(&self, pos: isize) -> isize {
         if pos < 0 {

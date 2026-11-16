@@ -6,6 +6,8 @@ const SYSCALL_MKDIRAT: usize = 34;
 const SYSCALL_UNLINKAT: usize = 35;
 const SYSCALL_CHDIR: usize = 49;
 const SYSCALL_FSTAT: usize = 80;
+const SYSCALL_TRUNCATE: usize = 45;
+const SYSCALL_FTRUNCATE: usize = 46;
 const SYSCALL_STATFS: usize = 43;
 const SYSCALL_FSTATFS: usize = 44;
 const SYSCALL_RENAMEAT: usize = 38;
@@ -94,6 +96,8 @@ pub fn syscall(syscall_id: usize, args: [usize; 5]) -> isize {
         SYSCALL_RENAMEAT => sys_renameat(args[1] as *const u8, args[3] as *const u8),
         SYSCALL_RENAMEAT2 => sys_renameat(args[1] as *const u8, args[3] as *const u8),
         SYSCALL_STATFS | SYSCALL_FSTATFS => sys_statfs(args[1] as *mut u8),
+        SYSCALL_FTRUNCATE => sys_ftruncate(args[0], args[1]),
+        SYSCALL_TRUNCATE => sys_truncate(),
         SYSCALL_IOCTL => sys_ioctl(),
         SYSCALL_LSEEK => sys_lseek(args[0], args[1] as isize, args[2]),
         SYSCALL_FUTEX => sys_futex(args[0], args[1], args[2]),

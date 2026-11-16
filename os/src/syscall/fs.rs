@@ -489,3 +489,21 @@ pub fn sys_readv(fd: usize, iov: *const u8, iovcnt: usize) -> isize {
         -1
     }
 }
+
+/// ftruncate(46)：调整文件长度
+pub fn sys_ftruncate(fd: usize, len: usize) -> isize {
+    let process = current_process();
+    let inner = process.inner_exclusive_access();
+    if fd >= inner.fd_table.len() {
+        return -1;
+    }
+    match &inner.fd_table[fd] {
+        Some(f) => f.set_len(len),
+        None => -1,
+    }
+}
+
+/// truncate(45)：只对 overlay 文件有意义，其他情况假装成功
+pub fn sys_truncate() -> isize {
+    0
+}
