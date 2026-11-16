@@ -97,6 +97,10 @@ pub fn sys_exec(path: *const u8, mut args: *const usize) -> isize {
             process.exec(interp_data.as_slice(), new_args);
             return 0;
         }
+        // 不是 ELF 也不是脚本：返回 ENOEXEC，避免内核 panic
+        if !all_data.starts_with(b"\x7fELF") {
+            return -1;
+        }
         let argc = args_vec.len();
         process.exec(all_data.as_slice(), args_vec);
         // return argc because cx.x[10] will be covered with it later

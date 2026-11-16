@@ -115,10 +115,18 @@ impl File for OverlayFile {
         new
     }
     fn write(&self, buf: UserBuffer) -> usize {
+        // overlay 存在内核堆里，限制单文件大小，避免把内核堆写爆
+        const MAX_OVERLAY: usize = 0x10_0000;
         let mut data = self.data.exclusive_access();
         let mut off = self.offset.exclusive_access();
         let mut n = 0;
         for ptr in buf {
+            if *off >= MAX_OVERLAY {
+                // 假装写成功，实际丢弃
+                *off += 1;
+                n += 1;
+                continue;
+            }
             let b = unsafe { ptr.read_volatile() };
             if *off < data.len() {
                 data[*off] = b;
@@ -164,6 +172,9 @@ pub fn open_dyn(name: &str, flags: OpenFlags) -> Option<Arc<dyn File + Send + Sy
         return Some(Arc::new(OverlayFile::new(overlay_create("/.rootdir"))));
     }
     if let Some(d) = overlay_get(name) {
+        if flags.contains(OpenFlags::TRUNC) {
+            d.exclusive_access().clear();
+        }
         return Some(Arc::new(OverlayFile::new(d)));
     }
     if let Some(fs) = EXT4.as_ref() {

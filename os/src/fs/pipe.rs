@@ -28,7 +28,7 @@ impl Pipe {
     }
 }
 
-const RING_BUFFER_SIZE: usize = 32;
+const RING_BUFFER_SIZE: usize = 65536;
 
 #[derive(Copy, Clone, PartialEq)]
 enum RingBufferStatus {
@@ -124,6 +124,10 @@ impl File for Pipe {
                     return read_size;
                 }
                 drop(ring_buffer);
+                // 已经读到数据：短读返回，避免死等后续数据（Linux pipe 语义）
+                if read_size > 0 {
+                    return read_size;
+                }
                 suspend_current_and_run_next();
                 continue;
             }

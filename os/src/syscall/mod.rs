@@ -20,6 +20,8 @@ const SYSCALL_READV: usize = 65;
 const SYSCALL_RENAMEAT2: usize = 276;
 const SYSCALL_PPOLL: usize = 73;
 const SYSCALL_NEWFSTATAT: usize = 79;
+const SYSCALL_FSYNC: usize = 81;
+const SYSCALL_FDATASYNC: usize = 82;
 const SYSCALL_SIGACTION: usize = 134;
 const SYSCALL_SIGPROCMASK: usize = 135;
 const SYSCALL_SETPRIORITY: usize = 141;
@@ -96,6 +98,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 5]) -> isize {
         SYSCALL_PPOLL => sys_ppoll(args[0] as *mut u8, args[1]),
         SYSCALL_SENDFILE => sys_sendfile(args[0], args[1], args[3]),
         SYSCALL_NEWFSTATAT => sys_newfstatat(args[1] as *const u8, args[2] as *mut u8),
+        SYSCALL_FSYNC | SYSCALL_FDATASYNC => 0,
         SYSCALL_SIGACTION => signal::sys_rt_sigaction(args[0], args[1] as *const u8, args[2] as *mut u8),
         SYSCALL_SIGPROCMASK => 0,
         SYSCALL_SETPRIORITY => 0,
