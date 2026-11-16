@@ -63,8 +63,8 @@ bitflags! {
         const RDONLY = 0;
         const WRONLY = 1 << 0;
         const RDWR = 1 << 1;
-        const CREATE = 1 << 9;
-        const TRUNC = 1 << 10;
+        const CREATE = 0o100;
+        const TRUNC = 0o1000;
     }
 }
 
@@ -93,7 +93,11 @@ pub fn yield_() -> isize {
     sys_yield()
 }
 pub fn get_time() -> isize {
-    sys_get_time()
+    let mut tv = [0usize; 2];
+    if sys_get_time(tv.as_mut_ptr() as *mut u8) != 0 {
+        return -1;
+    }
+    (tv[0] * 1000 + tv[1] / 1000) as isize
 }
 pub fn getpid() -> isize {
     sys_getpid()

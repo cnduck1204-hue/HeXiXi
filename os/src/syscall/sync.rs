@@ -132,3 +132,29 @@ pub fn sys_condvar_wait(condvar_id: usize, mutex_id: usize) -> isize {
     condvar.wait(mutex);
     0
 }
+
+/// Linux nanosleep(101)：参数是 struct timespec { i64 sec; i64 nsec; }
+/// 兼容旧写法：参数很小（< 4096）时按毫秒处理
+pub fn sys_nanosleep(req: usize, _rem: usize) -> isize {
+    let ms = if req < 4096 {
+        req
+    } else {
+        let token = crate::task::current_user_token();
+        let sec = *crate::mm::translated_ref(token, req as *const usize) as i64;
+        let nsec = *crate::mm::translated_ref(token, (req + 8) as *const usize) as i64;
+        (sec * 1000 + nsec / 1_000_000) as usize
+    };
+    sys_sleep(ms);
+    0
+}
+
+/// clock_gettime(113)：只填 timespec 的秒/纳秒
+pub fn sys_clock_gettime(tp: *mut u8) -> isize {
+    let token = crate::task::current_user_token();
+    let ms = get_time_ms();
+    let sec = (ms / 1000) as usize;
+    let nsec = ((ms % 1000) * 1_000_000) as usize;
+    *crate::mm::translated_refmut(token, tp as *mut usize) = sec;
+    *crate::mm::translated_refmut(token, (tp as usize + 8) as *mut usize) = nsec;
+    0
+}

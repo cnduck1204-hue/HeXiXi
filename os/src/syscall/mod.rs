@@ -1,4 +1,5 @@
 const SYSCALL_IOCTL: usize = 29;
+const SYSCALL_DUP_LEGACY: usize = 23;
 const SYSCALL_DUP: usize = 24;
 const SYSCALL_OPEN: usize = 56;
 const SYSCALL_CLOSE: usize = 57;
@@ -10,10 +11,14 @@ const SYSCALL_READ: usize = 63;
 const SYSCALL_WRITE: usize = 64;
 const SYSCALL_EXIT: usize = 93;
 const SYSCALL_SLEEP: usize = 101;
+const SYSCALL_CLOCK_GETTIME: usize = 113;
+const SYSCALL_TIMES: usize = 153;
+const SYSCALL_UNAME: usize = 160;
 const SYSCALL_YIELD: usize = 124;
 const SYSCALL_KILL: usize = 129;
 const SYSCALL_GET_TIME: usize = 169;
 const SYSCALL_GETPID: usize = 172;
+const SYSCALL_GETPPID: usize = 173;
 const SYSCALL_FORK: usize = 220;
 const SYSCALL_EXEC: usize = 221;
 const SYSCALL_WAITPID: usize = 260;
@@ -40,11 +45,12 @@ use process::*;
 use sync::*;
 use thread::*;
 
-pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
+pub fn syscall(syscall_id: usize, args: [usize; 4]) -> isize {
     match syscall_id {
         SYSCALL_IOCTL => sys_ioctl(),
+        SYSCALL_DUP_LEGACY => sys_dup(args[0]),
         SYSCALL_DUP => sys_dup(args[0]),
-        SYSCALL_OPEN => sys_open(args[0] as *const u8, args[1] as u32),
+        SYSCALL_OPEN => sys_openat(args[0] as isize, args[1] as *const u8, args[2] as u32, args[3] as u32),
         SYSCALL_CLOSE => sys_close(args[0]),
         SYSCALL_PIPE => sys_pipe(args[0] as *mut usize),
         SYSCALL_READ => sys_read(args[0], args[1] as *const u8, args[2]),
@@ -53,11 +59,15 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_EXIT => sys_exit(args[0] as i32),
         SYSCALL_EXIT_GROUP => sys_exit_group(args[0] as i32),
         SYSCALL_SET_TID_ADDRESS => sys_set_tid_address(args[0]),
-        SYSCALL_SLEEP => sys_sleep(args[0]),
+        SYSCALL_SLEEP => sys_nanosleep(args[0], args[1]),
+        SYSCALL_CLOCK_GETTIME => sys_clock_gettime(args[1] as *mut u8),
+        SYSCALL_TIMES => sys_times(args[0] as *mut u8),
+        SYSCALL_UNAME => sys_uname(args[0] as *mut u8),
         SYSCALL_YIELD => sys_yield(),
         SYSCALL_KILL => sys_kill(args[0], args[1] as u32),
-        SYSCALL_GET_TIME => sys_get_time(),
+        SYSCALL_GET_TIME => sys_gettimeofday(args[0] as *mut u8),
         SYSCALL_GETPID => sys_getpid(),
+        SYSCALL_GETPPID => sys_getppid(),
         SYSCALL_FORK => sys_fork(),
         SYSCALL_EXEC => sys_exec(args[0] as *const u8, args[1] as *const usize),
         SYSCALL_WAITPID => sys_waitpid(args[0] as isize, args[1] as *mut i32),

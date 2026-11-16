@@ -132,3 +132,35 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> isize {
 pub fn sys_ioctl() -> isize {
     -25 // ENOTTY
 }
+
+/// openat(2)：只支持 AT_FDCWD；把 Linux 的 open flags 翻译成内核 OpenFlags
+pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, _mode: u32) -> isize {
+    if dirfd != -100 {
+        return -1;
+    }
+    let token = current_user_token();
+    // easy-fs 是扁平命名空间：去掉 "./" 与前导 "/"
+    let path = translated_str(token, path);
+    let path = alloc::string::String::from(path.trim_start_matches("./").trim_start_matches('/'));
+    let mut of = OpenFlags::RDONLY;
+    match flags & 0b11 {
+        1 => of = OpenFlags::WRONLY,
+        2 => of = OpenFlags::RDWR,
+        _ => {}
+    }
+    if flags & 0o100 != 0 {
+        of |= OpenFlags::CREATE;
+    }
+    if flags & 0o1000 != 0 {
+        of |= OpenFlags::TRUNC;
+    }
+    if let Some(inode) = open_file(path.as_str(), of) {
+        let process = current_process();
+        let mut inner = process.inner_exclusive_access();
+        let fd = inner.alloc_fd();
+        inner.fd_table[fd] = Some(inode);
+        fd as isize
+    } else {
+        -1
+    }
+}

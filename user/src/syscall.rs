@@ -28,7 +28,7 @@ const SYSCALL_CONDVAR_CREATE: usize = 1030;
 const SYSCALL_CONDVAR_SIGNAL: usize = 1031;
 const SYSCALL_CONDVAR_WAIT: usize = 1032;
 
-fn syscall(id: usize, args: [usize; 3]) -> isize {
+fn syscall4(id: usize, args: [usize; 4]) -> isize {
     let mut ret: isize;
     unsafe {
         asm!(
@@ -36,10 +36,15 @@ fn syscall(id: usize, args: [usize; 3]) -> isize {
             inlateout("x10") args[0] => ret,
             in("x11") args[1],
             in("x12") args[2],
+            in("x13") args[3],
             in("x17") id
         );
     }
     ret
+}
+
+fn syscall(id: usize, args: [usize; 3]) -> isize {
+    syscall4(id, [args[0], args[1], args[2], 0])
 }
 
 pub fn sys_dup(fd: usize) -> isize {
@@ -47,7 +52,16 @@ pub fn sys_dup(fd: usize) -> isize {
 }
 
 pub fn sys_open(path: &str, flags: u32) -> isize {
-    syscall(SYSCALL_OPEN, [path.as_ptr() as usize, flags as usize, 0])
+    // Linux 语义：openat(AT_FDCWD, path, flags, mode)
+    syscall4(
+        SYSCALL_OPEN,
+        [
+            (-100isize) as usize,
+            path.as_ptr() as usize,
+            flags as usize,
+            0o666,
+        ],
+    )
 }
 
 pub fn sys_close(fd: usize) -> isize {
@@ -86,8 +100,8 @@ pub fn sys_kill(pid: usize, signal: i32) -> isize {
     syscall(SYSCALL_KILL, [pid, signal as usize, 0])
 }
 
-pub fn sys_get_time() -> isize {
-    syscall(SYSCALL_GET_TIME, [0, 0, 0])
+pub fn sys_get_time(tv: *mut u8) -> isize {
+    syscall(SYSCALL_GET_TIME, [tv as usize, 0, 0])
 }
 
 pub fn sys_getpid() -> isize {

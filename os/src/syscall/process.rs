@@ -71,36 +71,66 @@ pub fn sys_exec(path: *const u8, mut args: *const usize) -> isize {
 /// Else if there is a child process but it is still running, return -2.
 pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
     let process = current_process();
-    // find a child process
+    loop {
+        let mut inner = process.inner_exclusive_access();
+        if !inner
+            .children
+            .iter()
+            .any(|p| pid == -1 || pid as usize == p.getpid())
+        {
+            return -1;
+        }
+        let pair = inner.children.iter().enumerate().find(|(_, p)| {
+            p.inner_exclusive_access().is_zombie && (pid == -1 || pid as usize == p.getpid())
+        });
+        if let Some((idx, _)) = pair {
+            let child = inner.children.remove(idx);
+            let found_pid = child.getpid();
+            let exit_code = child.inner_exclusive_access().exit_code;
+            *translated_refmut(inner.memory_set.token(), exit_code_ptr) = exit_code;
+            return found_pid as isize;
+        }
+        drop(inner);
+        suspend_current_and_run_next();
+    }
+}
 
-    let mut inner = process.inner_exclusive_access();
-    if !inner
-        .children
-        .iter()
-        .any(|p| pid == -1 || pid as usize == p.getpid())
-    {
-        return -1;
-        // ---- release current PCB
+pub fn sys_getppid() -> isize {
+    let process = current_process();
+    let inner = process.inner_exclusive_access();
+    match &inner.parent {
+        Some(p) => p.upgrade().map(|p| p.getpid() as isize).unwrap_or(0),
+        None => 0,
     }
-    let pair = inner.children.iter().enumerate().find(|(_, p)| {
-        // ++++ temporarily access child PCB exclusively
-        p.inner_exclusive_access().is_zombie && (pid == -1 || pid as usize == p.getpid())
-        // ++++ release child PCB
-    });
-    if let Some((idx, _)) = pair {
-        let child = inner.children.remove(idx);
-        // confirm that child will be deallocated after being removed from children list
-        assert_eq!(Arc::strong_count(&child), 1);
-        let found_pid = child.getpid();
-        // ++++ temporarily access child PCB exclusively
-        let exit_code = child.inner_exclusive_access().exit_code;
-        // ++++ release child PCB
-        *translated_refmut(inner.memory_set.token(), exit_code_ptr) = exit_code;
-        found_pid as isize
-    } else {
-        -2
+}
+
+/// uname(2)：填 6 个 65 字节字段
+pub fn sys_uname(buf: *mut u8) -> isize {
+    let token = current_user_token();
+    let fields: [&str; 6] = [
+        "Linux",
+        "rcore",
+        "6.0.0-rcore",
+        "#1 rCore-Tutorial",
+        "riscv64",
+        "localdomain",
+    ];
+    for (i, f) in fields.iter().enumerate() {
+        for j in 0..65usize {
+            let c = if j < f.len() { f.as_bytes()[j] } else { 0 };
+            *translated_refmut(token, (buf as usize + i * 65 + j) as *mut u8) = c;
+        }
     }
-    // ---- release current PCB automatically
+    0
+}
+
+/// times(2)：返回 100Hz 的时钟滴答数
+pub fn sys_times(buf: *mut u8) -> isize {
+    let token = current_user_token();
+    for i in 0..32usize {
+        *translated_refmut(token, (buf as usize + i) as *mut u8) = 0;
+    }
+    (crate::timer::get_time_ms() / 10) as isize
 }
 
 pub fn sys_kill(pid: usize, signal: u32) -> isize {
@@ -123,4 +153,13 @@ pub fn sys_exit_group(exit_code: i32) -> ! {
 /// 单线程进程，tid 用 pid 代替
 pub fn sys_set_tid_address(_tidptr: usize) -> isize {
     current_process().getpid() as isize
+}
+
+/// gettimeofday(169)：填 struct timeval { long sec; long usec; }，返回 0
+pub fn sys_gettimeofday(tv: *mut u8) -> isize {
+    let token = current_user_token();
+    let ms = crate::timer::get_time_ms();
+    *translated_refmut(token, tv as *mut usize) = ms / 1000;
+    *translated_refmut(token, (tv as usize + 8) as *mut usize) = (ms % 1000) * 1000;
+    0
 }

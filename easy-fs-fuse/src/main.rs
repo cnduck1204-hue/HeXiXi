@@ -65,9 +65,11 @@ fn easy_fs_pack() -> std::io::Result<()> {
         .unwrap()
         .into_iter()
         .map(|dir_entry| {
-            let mut name_with_ext = dir_entry.unwrap().file_name().into_string().unwrap();
-            name_with_ext.drain(name_with_ext.find('.').unwrap()..name_with_ext.len());
-            name_with_ext
+            let name_with_ext = dir_entry.unwrap().file_name().into_string().unwrap();
+            match name_with_ext.strip_suffix(".rs") {
+                Some(stem) => stem.to_string(),
+                None => name_with_ext,
+            }
         })
         .collect();
     for app in apps {
