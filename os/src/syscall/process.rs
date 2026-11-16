@@ -166,3 +166,55 @@ pub fn sys_gettimeofday(tv: *mut u8) -> isize {
     *translated_refmut(token, (tv as usize + 8) as *mut usize) = (ms % 1000) * 1000;
     0
 }
+
+/// brk(214)：调整 program break，向上增长时按页建立映射
+pub fn sys_brk(addr: usize) -> isize {
+    let process = current_process();
+    let mut inner = process.inner_exclusive_access();
+    let old = inner.brk;
+    if addr == 0 {
+        return old as isize;
+    }
+    if addr < inner.brk_base {
+        return old as isize;
+    }
+    if addr > old {
+        let page = crate::config::PAGE_SIZE;
+        let old_page = (old + page - 1) / page * page;
+        let new_page = (addr + page - 1) / page * page;
+        if new_page <= old_page {
+            inner.brk = addr;
+            return addr as isize;
+        }
+        let start: crate::mm::VirtAddr = old_page.into();
+        let end: crate::mm::VirtAddr = new_page.into();
+        inner.memory_set.insert_framed_area(
+            start,
+            end,
+            crate::mm::MapPermission::U | crate::mm::MapPermission::R | crate::mm::MapPermission::W,
+        );
+    }
+    inner.brk = addr;
+    addr as isize
+}
+
+/// mmap(222)：只支持匿名映射，从固定的 mmap 区向上分配
+pub fn sys_mmap(len: usize) -> isize {
+    let process = current_process();
+    let mut inner = process.inner_exclusive_access();
+    let size = (len + crate::config::PAGE_SIZE - 1) / crate::config::PAGE_SIZE * crate::config::PAGE_SIZE;
+    let start = inner.mmap_top;
+    let end = start + size;
+    inner.memory_set.insert_framed_area(
+        start.into(),
+        end.into(),
+        crate::mm::MapPermission::U | crate::mm::MapPermission::R | crate::mm::MapPermission::W,
+    );
+    inner.mmap_top = end;
+    start as isize
+}
+
+/// munmap(215)：暂不真正回收
+pub fn sys_munmap() -> isize {
+    0
+}

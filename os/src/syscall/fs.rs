@@ -214,7 +214,8 @@ pub fn sys_mkdirat(_dirfd: isize, path: *const u8) -> isize {
     let p = translated_str(token, path);
     let p = alloc::string::String::from(p.trim_start_matches("./").trim_start_matches('/'));
     if crate::fs::has_ext4() {
-        // 官方评测盘是只读的，不能真的建目录；假装成功，避免触碰 easy-fs
+        // EXT4 只读，用内存 overlay 记录
+        crate::fs::overlay_create(p.as_str());
         return 0;
     }
     match open_file(p.as_str(), OpenFlags::CREATE | OpenFlags::RDONLY) {
@@ -228,6 +229,10 @@ pub fn sys_unlinkat(_dirfd: isize, path: *const u8) -> isize {
     let token = current_user_token();
     let p = translated_str(token, path);
     let p = alloc::string::String::from(p.trim_start_matches("./").trim_start_matches('/'));
+    if crate::fs::has_ext4() {
+        crate::fs::overlay_remove(p.as_str());
+        return 0;
+    }
     crate::fs::mark_unlinked(p.as_str());
     0
 }
@@ -240,6 +245,7 @@ pub fn sys_fstat(fd: usize, st: *mut u8) -> isize {
     if fd >= inner.fd_table.len() || inner.fd_table[fd].is_none() {
         return -1;
     }
+    let file_size = inner.fd_table[fd].as_ref().unwrap().size();
     drop(inner);
     let mut buf = [0u8; 128];
     // st_ino = fd
@@ -248,7 +254,8 @@ pub fn sys_fstat(fd: usize, st: *mut u8) -> isize {
     buf[16..20].copy_from_slice(&(0o100644u32).to_le_bytes());
     // st_nlink = 1
     buf[20..24].copy_from_slice(&1u32.to_le_bytes());
-    // st_size = 0（easy-fs 未暴露长度）
+    // st_size
+    buf[48..56].copy_from_slice(&(file_size as u64).to_le_bytes());
     // st_blksize = 512
     buf[56..60].copy_from_slice(&512u32.to_le_bytes());
     for (i, b) in buf.iter().enumerate() {

@@ -35,6 +35,12 @@ pub struct ProcessControlBlockInner {
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
     /// 当前工作目录（easy-fs 是扁平命名空间，仅记录字符串）
     pub cwd: String,
+    /// 堆起始（可增长下界）
+    pub brk_base: usize,
+    /// 当前 program break
+    pub brk: usize,
+    /// mmap 分配起点（向上增长）
+    pub mmap_top: usize,
 }
 
 impl ProcessControlBlockInner {
@@ -103,6 +109,9 @@ impl ProcessControlBlock {
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
                     cwd: String::from("/"),
+                    brk_base: 0,
+                    brk: 0,
+                    mmap_top: 0x1000_0000,
                 })
             },
         });
@@ -141,6 +150,8 @@ impl ProcessControlBlock {
         // memory_set with elf program headers/trampoline/trap context/user stack
         let (memory_set, ustack_base, entry_point) = MemorySet::from_elf(elf_data);
         let new_token = memory_set.token();
+        // 堆放在独立地址段，避免与用户栈/程序段重叠
+        let heap_base: usize = 0x2000_0000;
         // substitute memory_set
         self.inner_exclusive_access().memory_set = memory_set;
         // then we alloc user resource for main thread again
@@ -150,6 +161,11 @@ impl ProcessControlBlock {
         task_inner.res.as_mut().unwrap().ustack_base = ustack_base;
         task_inner.res.as_mut().unwrap().alloc_user_res();
         task_inner.trap_cx_ppn = task_inner.res.as_mut().unwrap().trap_cx_ppn();
+        {
+            let mut pinner = self.inner_exclusive_access();
+            pinner.brk_base = heap_base;
+            pinner.brk = heap_base;
+        }
         // ---- 构造 Linux 进程启动栈 ----
         // 低地址 -> 高地址：argc | argv[..] | NULL | NULL(envp) | auxv | 字符串/程序头/随机数
         let mut sp = task_inner.res.as_mut().unwrap().ustack_top();
@@ -272,6 +288,9 @@ impl ProcessControlBlock {
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
                     cwd: String::from("/"),
+                    brk_base: 0,
+                    brk: 0,
+                    mmap_top: 0x1000_0000,
                 })
             },
         });

@@ -303,6 +303,9 @@ impl File for Ext4File {
         }
         n
     }
+    fn size(&self) -> usize {
+        self.inode.size as usize
+    }
     fn write(&self, _buf: UserBuffer) -> usize {
         panic!("EXT4 root is read-only");
     }

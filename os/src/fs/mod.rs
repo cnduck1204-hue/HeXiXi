@@ -10,11 +10,16 @@ pub trait File: Send + Sync {
     fn writable(&self) -> bool;
     fn read(&self, buf: UserBuffer) -> usize;
     fn write(&self, buf: UserBuffer) -> usize;
+    /// 文件大小（fstat/mmap 需要）
+    fn size(&self) -> usize {
+        0
+    }
 }
 
 pub use inode::{is_unlinked, list_apps, mark_unlinked, open_file, root_names, OSInode, OpenFlags};
 pub use pipe::{make_pipe, Pipe};
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -29,8 +34,94 @@ pub fn has_ext4() -> bool {
     EXT4.is_some()
 }
 
+/// EXT4 是只读的，这里用内存 overlay 支持创建/删除，
+/// 让 close/open(O_CREATE)/mkdir/unlink 这类用例可以工作。
+lazy_static! {
+    static ref OVERLAY: crate::sync::UPSafeCell<BTreeMap<String, Arc<crate::sync::UPSafeCell<Vec<u8>>>>> =
+        unsafe { crate::sync::UPSafeCell::new(BTreeMap::new()) };
+}
+
+pub type OverlayData = Arc<crate::sync::UPSafeCell<Vec<u8>>>;
+
+pub fn overlay_get(name: &str) -> Option<OverlayData> {
+    OVERLAY.exclusive_access().get(name).cloned()
+}
+
+pub fn overlay_create(name: &str) -> OverlayData {
+    let mut map = OVERLAY.exclusive_access();
+    if let Some(d) = map.get(name) {
+        return d.clone();
+    }
+    let d: OverlayData = Arc::new(unsafe { crate::sync::UPSafeCell::new(Vec::new()) });
+    map.insert(String::from(name), d.clone());
+    d
+}
+
+pub fn overlay_remove(name: &str) {
+    OVERLAY.exclusive_access().remove(name);
+}
+
+pub struct OverlayFile {
+    data: OverlayData,
+    offset: crate::sync::UPSafeCell<usize>,
+}
+
+impl OverlayFile {
+    pub fn new(data: OverlayData) -> Self {
+        Self {
+            data,
+            offset: unsafe { crate::sync::UPSafeCell::new(0) },
+        }
+    }
+}
+
+impl File for OverlayFile {
+    fn readable(&self) -> bool {
+        true
+    }
+    fn writable(&self) -> bool {
+        true
+    }
+    fn read(&self, buf: UserBuffer) -> usize {
+        let data = self.data.exclusive_access();
+        let mut off = self.offset.exclusive_access();
+        let mut n = 0;
+        for ptr in buf {
+            if *off >= data.len() {
+                break;
+            }
+            unsafe { ptr.write_volatile(data[*off]); }
+            *off += 1;
+            n += 1;
+        }
+        n
+    }
+    fn size(&self) -> usize {
+        self.data.exclusive_access().len()
+    }
+    fn write(&self, buf: UserBuffer) -> usize {
+        let mut data = self.data.exclusive_access();
+        let mut off = self.offset.exclusive_access();
+        let mut n = 0;
+        for ptr in buf {
+            let b = unsafe { ptr.read_volatile() };
+            if *off < data.len() {
+                data[*off] = b;
+            } else {
+                data.push(b);
+            }
+            *off += 1;
+            n += 1;
+        }
+        n
+    }
+}
+
 /// 读出整个文件（内核内部用，例如 exec 加载 ELF）
 pub fn read_file_all(name: &str) -> Option<Vec<u8>> {
+    if let Some(d) = overlay_get(name) {
+        return Some(d.exclusive_access().clone());
+    }
     if let Some(fs) = EXT4.as_ref() {
         let inode = fs.lookup(name)?;
         Some(fs.read_file(&inode))
@@ -41,7 +132,13 @@ pub fn read_file_all(name: &str) -> Option<Vec<u8>> {
 
 /// 打开文件并返回统一的 File 对象（供系统调用使用）
 pub fn open_dyn(name: &str, flags: OpenFlags) -> Option<Arc<dyn File + Send + Sync>> {
+    if let Some(d) = overlay_get(name) {
+        return Some(Arc::new(OverlayFile::new(d)));
+    }
     if let Some(fs) = EXT4.as_ref() {
+        if flags.contains(OpenFlags::CREATE) {
+            return Some(Arc::new(OverlayFile::new(overlay_create(name))));
+        }
         let inode = fs.lookup(name)?;
         Some(Arc::new(ext4::Ext4File::new(Arc::clone(fs), inode)))
     } else {
@@ -51,6 +148,9 @@ pub fn open_dyn(name: &str, flags: OpenFlags) -> Option<Arc<dyn File + Send + Sy
 
 /// 根目录是否存在某文件
 pub fn exists(name: &str) -> bool {
+    if overlay_get(name).is_some() {
+        return true;
+    }
     if let Some(fs) = EXT4.as_ref() {
         fs.lookup(name).is_some()
     } else {
