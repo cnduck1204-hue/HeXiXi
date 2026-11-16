@@ -14,4 +14,4 @@ easy-fs/target/*
 easy-fs-fuse/target/*
 tools/
 pushall.sh
-.vscode/*.log
+.vscode/*.logkernel-rv
