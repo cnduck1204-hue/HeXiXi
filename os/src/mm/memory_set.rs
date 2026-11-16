@@ -60,6 +60,20 @@ impl MemorySet {
             None,
         );
     }
+    /// 映射一个页并写入数据（用于信号 stub 等内核注入的用户页）
+    pub fn insert_data_page(
+        &mut self,
+        start_va: VirtAddr,
+        permission: MapPermission,
+        data: &[u8],
+    ) -> Option<PhysPageNum> {
+        let end_va = VirtAddr::from(start_va.0 + PAGE_SIZE);
+        let area = MapArea::new(start_va, end_va, MapType::Framed, permission);
+        let data_opt = if data.is_empty() { None } else { Some(data) };
+        self.push(area, data_opt);
+        self.translate(start_va.floor()).map(|e| e.ppn())
+    }
+
     pub fn remove_area_with_start_vpn(&mut self, start_vpn: VirtPageNum) {
         if let Some((idx, area)) = self
             .areas

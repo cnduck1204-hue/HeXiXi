@@ -58,10 +58,14 @@ pub fn trap_handler() -> ! {
             let mut cx = current_trap_cx();
             cx.sepc += 4;
             // get system call return value
-            let result = syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12], cx.x[13], cx.x[14]]);
+            let id = cx.x[17];
+            let result = syscall(id, [cx.x[10], cx.x[11], cx.x[12], cx.x[13], cx.x[14]]);
             // cx is changed during sys_exec, so we have to call it again
             cx = current_trap_cx();
-            cx.x[10] = result as usize;
+            if id != 139 {
+                // 139 = rt_sigreturn，已恢复完整上下文，不能覆盖 a0
+                cx.x[10] = result as usize;
+            }
         }
         Trap::Exception(Exception::StoreFault)
         | Trap::Exception(Exception::StorePageFault)
@@ -93,8 +97,8 @@ pub fn trap_handler() -> ! {
         }
         Trap::Interrupt(Interrupt::SupervisorTimer) => {
             set_next_trigger();
+            crate::syscall::signal::check_alarm();
             check_timer();
-            suspend_current_and_run_next();
         }
         _ => {
             panic!(
@@ -104,6 +108,7 @@ pub fn trap_handler() -> ! {
             );
         }
     }
+    crate::syscall::signal::deliver_signal();
     // check signals
     if let Some((errno, msg)) = check_signals_of_current() {
         println!("[kernel] {}", msg);

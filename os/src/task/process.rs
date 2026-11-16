@@ -45,6 +45,14 @@ pub struct ProcessControlBlockInner {
     pub dir_paths: alloc::collections::BTreeMap<usize, String>,
     /// 目录 fd -> 已读条目偏移
     pub dir_offsets: alloc::collections::BTreeMap<usize, usize>,
+    /// SIGALRM 到期时间（ms，0 表示未设置）
+    pub alarm_deadline: usize,
+    /// SIGALRM handler 地址（0 表示未注册）
+    pub sigalrm_handler: usize,
+    /// SIGALRM 待投递
+    pub sigalrm_pending: bool,
+    /// 正在执行 SIGALRM handler（避免重入）
+    pub in_sigalrm: bool,
 }
 
 impl ProcessControlBlockInner {
@@ -86,7 +94,7 @@ impl ProcessControlBlock {
 
     pub fn new(elf_data: &[u8]) -> Arc<Self> {
         // memory_set with elf program headers/trampoline/trap context/user stack
-        let (memory_set, ustack_base, entry_point) = MemorySet::from_elf(elf_data);
+        let (mut memory_set, ustack_base, entry_point) = MemorySet::from_elf(elf_data);
         // allocate a pid
         let pid_handle = pid_alloc();
         let process = Arc::new(Self {
@@ -118,6 +126,10 @@ impl ProcessControlBlock {
                     mmap_top: 0x1000_0000,
                     dir_paths: alloc::collections::BTreeMap::new(),
                     dir_offsets: alloc::collections::BTreeMap::new(),
+                    alarm_deadline: 0,
+                    sigalrm_handler: 0,
+                    sigalrm_pending: false,
+                    in_sigalrm: false,
                 })
             },
         });
@@ -154,10 +166,12 @@ impl ProcessControlBlock {
     pub fn exec(self: &Arc<Self>, elf_data: &[u8], args: Vec<String>) {
         assert_eq!(self.inner_exclusive_access().thread_count(), 1);
         // memory_set with elf program headers/trampoline/trap context/user stack
-        let (memory_set, ustack_base, entry_point) = MemorySet::from_elf(elf_data);
+        let (mut memory_set, ustack_base, entry_point) = MemorySet::from_elf(elf_data);
         let new_token = memory_set.token();
         // 堆放在独立地址段，避免与用户栈/程序段重叠
         let heap_base: usize = 0x2000_0000;
+        // 信号投递用的用户页：可执行 stub + 保存的 trap context
+        crate::syscall::signal::setup_signal_pages(&mut memory_set);
         // substitute memory_set
         self.inner_exclusive_access().memory_set = memory_set;
         // then we alloc user resource for main thread again
@@ -299,6 +313,10 @@ impl ProcessControlBlock {
                     mmap_top: 0x1000_0000,
                     dir_paths: alloc::collections::BTreeMap::new(),
                     dir_offsets: alloc::collections::BTreeMap::new(),
+                    alarm_deadline: 0,
+                    sigalrm_handler: 0,
+                    sigalrm_pending: false,
+                    in_sigalrm: false,
                 })
             },
         });

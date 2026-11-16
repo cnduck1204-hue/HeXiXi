@@ -40,7 +40,9 @@ const SYSCALL_READ: usize = 63;
 const SYSCALL_WRITE: usize = 64;
 const SYSCALL_EXIT: usize = 93;
 const SYSCALL_SLEEP: usize = 101;
-const SYSCALL_SYSLOG: usize = 103;
+const SYSCALL_SYSLOG: usize = 116;
+const SYSCALL_SETITIMER: usize = 103;
+const SYSCALL_RT_SIGRETURN: usize = 139;
 const SYSCALL_CLOCK_GETTIME: usize = 113;
 const SYSCALL_TIMES: usize = 153;
 const SYSCALL_UNAME: usize = 160;
@@ -70,6 +72,7 @@ const SYSCALL_CONDVAR_WAIT: usize = 1032;
 
 mod fs;
 mod process;
+pub mod signal;
 mod sync;
 mod thread;
 
@@ -93,7 +96,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 5]) -> isize {
         SYSCALL_PPOLL => sys_ppoll(args[0] as *mut u8, args[1]),
         SYSCALL_SENDFILE => sys_sendfile(args[0], args[1], args[3]),
         SYSCALL_NEWFSTATAT => sys_newfstatat(args[1] as *const u8, args[2] as *mut u8),
-        SYSCALL_SIGACTION => 0,
+        SYSCALL_SIGACTION => signal::sys_rt_sigaction(args[0], args[1] as *const u8, args[2] as *mut u8),
         SYSCALL_SIGPROCMASK => 0,
         SYSCALL_SETPRIORITY => 0,
         SYSCALL_GETUID | SYSCALL_GETEUID | SYSCALL_GETGID | SYSCALL_GETEGID => 0,
@@ -119,6 +122,8 @@ pub fn syscall(syscall_id: usize, args: [usize; 5]) -> isize {
         SYSCALL_SET_TID_ADDRESS => sys_set_tid_address(args[0]),
         SYSCALL_SLEEP => sys_nanosleep(args[0], args[1]),
         SYSCALL_SYSLOG => 0,
+        SYSCALL_SETITIMER => signal::sys_setitimer(args[0], args[1] as *const u8, args[2] as *mut u8),
+        SYSCALL_RT_SIGRETURN => signal::sys_rt_sigreturn(),
         SYSCALL_CLOCK_GETTIME => sys_clock_gettime(args[1] as *mut u8),
         SYSCALL_TIMES => sys_times(args[0] as *mut u8),
         SYSCALL_UNAME => sys_uname(args[0] as *mut u8),
