@@ -91,6 +91,14 @@ pub fn sys_clone_thread(flags: usize, stack: usize, _ptid: usize, tls: usize, _c
     if flags & CLONE_VM == 0 {
         return super::process::sys_fork();
     }
+    {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        if n < 30 {
+            println!("[clone] count={} pid={} tid_in={} stack={:#x}", n, crate::task::current_process().getpid(), sys_gettid(), stack);
+        }
+    }
     let task = current_task().unwrap();
     let process = task.process.upgrade().unwrap();
     let ustack_base = task
@@ -105,7 +113,7 @@ pub fn sys_clone_thread(flags: usize, stack: usize, _ptid: usize, tls: usize, _c
         let cx = parent_inner.get_trap_cx();
         *cx
     };
-    let new_task = Arc::new(TaskControlBlock::new(Arc::clone(&process), ustack_base, true));
+    let new_task = Arc::new(TaskControlBlock::new_thread(Arc::clone(&process), ustack_base));
     add_task(Arc::clone(&new_task));
     let new_task_inner = new_task.inner_exclusive_access();
     let new_task_res = new_task_inner.res.as_ref().unwrap();

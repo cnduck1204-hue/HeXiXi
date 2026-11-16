@@ -134,6 +134,15 @@ pub fn exit_current_and_run_next(exit_code: i32) {
         process_inner.fd_table.clear();
         // remove all tasks
         process_inner.tasks.clear();
+    } else {
+        // 普通线程退出：从进程线程表摘除，TCB 交给延迟回收队列
+        let process = process.clone();
+        let mut process_inner = process.inner_exclusive_access();
+        if tid < process_inner.tasks.len() {
+            if let Some(task_arc) = process_inner.tasks[tid].take() {
+                recycle_task(task_arc);
+            }
+        }
     }
     drop(process);
     // we do not have to save task context
@@ -176,4 +185,25 @@ pub fn current_add_signal(signal: SignalFlags) {
 pub fn remove_inactive_task(task: Arc<TaskControlBlock>) {
     remove_task(Arc::clone(&task));
     remove_timer(Arc::clone(&task));
+}
+
+lazy_static! {
+    /// 已退出线程的 TCB 延迟回收（不能在自己的内核栈上析构）
+    static ref RECYCLE_QUEUE: crate::sync::UPSafeCell<Vec<Arc<TaskControlBlock>>> =
+        unsafe { crate::sync::UPSafeCell::new(Vec::new()) };
+}
+
+pub fn recycle_task(task: Arc<TaskControlBlock>) {
+    RECYCLE_QUEUE.exclusive_access().push(task);
+}
+
+pub fn drain_recycled_tasks() {
+    let tasks: Vec<Arc<TaskControlBlock>> = {
+        let mut q = RECYCLE_QUEUE.exclusive_access();
+        if q.is_empty() {
+            return;
+        }
+        core::mem::take(&mut *q)
+    };
+    drop(tasks);
 }

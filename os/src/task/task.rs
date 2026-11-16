@@ -68,6 +68,28 @@ impl TaskControlBlock {
             },
         }
     }
+
+    /// clone 线程专用：只分配 trap_cx，用户栈由调用者（musl）提供
+    pub fn new_thread(process: Arc<ProcessControlBlock>, ustack_base: usize) -> Self {
+        let res = TaskUserRes::new(Arc::clone(&process), ustack_base, false);
+        res.alloc_trap_cx_only();
+        let trap_cx_ppn = res.trap_cx_ppn();
+        let kstack = kstack_alloc();
+        let kstack_top = kstack.get_top();
+        Self {
+            process: Arc::downgrade(&process),
+            kstack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    res: Some(res),
+                    trap_cx_ppn,
+                    task_cx: TaskContext::goto_trap_return(kstack_top),
+                    task_status: TaskStatus::Ready,
+                    exit_code: None,
+                })
+            },
+        }
+    }
 }
 
 #[derive(Copy, Clone, PartialEq)]

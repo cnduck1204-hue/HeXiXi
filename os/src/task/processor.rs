@@ -35,6 +35,7 @@ lazy_static! {
 
 pub fn run_tasks() {
     loop {
+        super::drain_recycled_tasks();
         let mut processor = PROCESSOR.exclusive_access();
         if let Some(task) = fetch_task() {
             let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
