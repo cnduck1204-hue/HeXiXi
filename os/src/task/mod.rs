@@ -144,7 +144,9 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 lazy_static! {
     pub static ref INITPROC: Arc<ProcessControlBlock> = {
         // 测试盘上有 run_tests 标记时，改为启动自动跑测的 autorun
-        let name = if crate::fs::exists("run_tests") {
+        let name = if crate::fs::exists("basic_testcode.sh") {
+            "oscomp_runner"
+        } else if crate::fs::exists("run_tests") {
             "autorun"
         } else {
             "initproc"
