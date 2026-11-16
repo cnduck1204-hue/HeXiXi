@@ -198,6 +198,7 @@ pub fn recycle_task(task: Arc<TaskControlBlock>) {
 }
 
 pub fn drain_recycled_tasks() {
+    // 调试：暂时不析构（避免怀疑中的 use-after-free），改为只清空引用计数
     let tasks: Vec<Arc<TaskControlBlock>> = {
         let mut q = RECYCLE_QUEUE.exclusive_access();
         if q.is_empty() {
@@ -205,5 +206,7 @@ pub fn drain_recycled_tasks() {
         }
         core::mem::take(&mut *q)
     };
-    drop(tasks);
+    for t in tasks {
+        core::mem::forget(t);
+    }
 }
