@@ -68,13 +68,15 @@ pub fn trap_handler() -> ! {
                 current_trap_cx().sepc,
             );
             */
-            println!(
-                "[fault] pid={} {:?} sepc={:#x} stval={:#x}",
-                crate::task::current_process().getpid(),
-                scause.cause(),
-                current_trap_cx().sepc,
-                stval
-            );
+            {
+                let cx = current_trap_cx();
+                println!(
+                    "[fault] pid={} {:?} sepc={:#x} stval={:#x} sp={:#x} ra={:#x} s0={:#x}",
+                    crate::task::current_process().getpid(),
+                    scause.cause(),
+                    cx.sepc, stval, cx.x[2], cx.x[1], cx.x[8]
+                );
+            }
             current_add_signal(SignalFlags::SIGSEGV);
         }
         Trap::Exception(Exception::IllegalInstruction) => {
