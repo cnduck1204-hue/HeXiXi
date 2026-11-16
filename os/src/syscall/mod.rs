@@ -83,7 +83,11 @@ use process::*;
 use sync::*;
 use thread::*;
 
+pub static LAST_SYSCALL: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
 pub fn syscall(syscall_id: usize, args: [usize; 5]) -> isize {
+    LAST_SYSCALL.store(syscall_id, core::sync::atomic::Ordering::Relaxed);
     match syscall_id {
         SYSCALL_FCNTL => sys_fcntl(args[0], args[1], args[2]),
         SYSCALL_UTIMENSAT => 0,
