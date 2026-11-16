@@ -293,3 +293,30 @@ pub fn sys_getdents64(_fd: usize, buf: *mut u8, len: usize) -> isize {
     }
     n as isize
 }
+
+fn write_stat(token: usize, st: *mut u8, size: usize, mode: u32) {
+    let mut buf = [0u8; 128];
+    buf[8..16].copy_from_slice(&0u64.to_le_bytes()); // ino
+    buf[16..20].copy_from_slice(&mode.to_le_bytes());
+    buf[20..24].copy_from_slice(&1u32.to_le_bytes());
+    buf[48..56].copy_from_slice(&(size as u64).to_le_bytes());
+    buf[56..60].copy_from_slice(&512u32.to_le_bytes());
+    for (i, b) in buf.iter().enumerate() {
+        *translated_refmut(token, (st as usize + i) as *mut u8) = *b;
+    }
+}
+
+/// newfstatat(79)：按路径取文件信息
+pub fn sys_newfstatat(path: *const u8, st: *mut u8) -> isize {
+    let token = current_user_token();
+    let p = translated_str(token, path);
+    let p = alloc::string::String::from(p.trim_start_matches("./").trim_start_matches('/'));
+    let p = if p.is_empty() || p == "." { alloc::string::String::from("mnt") } else { p };
+    match crate::fs::read_file_all(p.as_str()) {
+        Some(data) => {
+            write_stat(token, st, data.len(), 0o100644);
+            0
+        }
+        None => -2,
+    }
+}

@@ -6,7 +6,16 @@ const SYSCALL_MKDIRAT: usize = 34;
 const SYSCALL_UNLINKAT: usize = 35;
 const SYSCALL_CHDIR: usize = 49;
 const SYSCALL_FSTAT: usize = 80;
+const SYSCALL_FCNTL: usize = 25;
 const SYSCALL_IOCTL: usize = 29;
+const SYSCALL_NEWFSTATAT: usize = 79;
+const SYSCALL_SIGACTION: usize = 134;
+const SYSCALL_SIGPROCMASK: usize = 135;
+const SYSCALL_SETPRIORITY: usize = 141;
+const SYSCALL_GETUID: usize = 174;
+const SYSCALL_GETEUID: usize = 175;
+const SYSCALL_GETGID: usize = 176;
+const SYSCALL_GETEGID: usize = 177;
 const SYSCALL_DUP_LEGACY: usize = 23;
 const SYSCALL_DUP: usize = 24;
 const SYSCALL_OPEN: usize = 56;
@@ -58,7 +67,13 @@ use thread::*;
 
 pub fn syscall(syscall_id: usize, args: [usize; 4]) -> isize {
     match syscall_id {
+        SYSCALL_FCNTL => 0,
         SYSCALL_IOCTL => sys_ioctl(),
+        SYSCALL_NEWFSTATAT => sys_newfstatat(args[1] as *const u8, args[2] as *mut u8),
+        SYSCALL_SIGACTION => 0,
+        SYSCALL_SIGPROCMASK => 0,
+        SYSCALL_SETPRIORITY => 0,
+        SYSCALL_GETUID | SYSCALL_GETEUID | SYSCALL_GETGID | SYSCALL_GETEGID => 0,
         SYSCALL_DUP_LEGACY => sys_dup(args[0]),
         SYSCALL_DUP => sys_dup3(args[0], args[1], args[2] as u32),
         SYSCALL_GETCWD => sys_getcwd(args[0] as *mut u8, args[1]),

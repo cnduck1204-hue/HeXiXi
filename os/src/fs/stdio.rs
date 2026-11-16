@@ -15,23 +15,25 @@ impl File for Stdin {
         false
     }
     fn read(&self, mut user_buf: UserBuffer) -> usize {
-        assert_eq!(user_buf.len(), 1);
-        // busy loop
-        let mut c: usize;
-        loop {
-            c = console_getchar();
-            if c == 0 || c == usize::MAX {
-                suspend_current_and_run_next();
-                continue;
-            } else {
-                break;
+        // 支持任意长度的读：阻塞等到第一个字符，之后尽量读满
+        let mut n = 0usize;
+        for ptr in user_buf.buffers.iter_mut() {
+            for slot in ptr.iter_mut() {
+                let c = loop {
+                    let c = console_getchar();
+                    if c != 0 && c != usize::MAX {
+                        break c;
+                    }
+                    if n > 0 {
+                        return n;
+                    }
+                    suspend_current_and_run_next();
+                };
+                *slot = c as u8;
+                n += 1;
             }
         }
-        let ch = c as u8;
-        unsafe {
-            user_buf.buffers[0].as_mut_ptr().write_volatile(ch);
-        }
-        1
+        n
     }
     fn write(&self, _user_buf: UserBuffer) -> usize {
         panic!("Cannot write to stdin!");
