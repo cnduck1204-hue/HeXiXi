@@ -1,3 +1,4 @@
+pub mod ext4;
 mod inode;
 mod pipe;
 mod stdio;
