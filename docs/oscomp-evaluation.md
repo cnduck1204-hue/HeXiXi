@@ -37,8 +37,9 @@ ELF 和 `xxx_testcode.sh` 脚本。内核需要在启动后：
 | busybox 组 | ✅ 55 条命令中 **49 条成功**（剩 df/dmesg/ps/hwclock/which/后台 kill） |
 | libcbench 组 | ⚠️ 能启动并输出标记，但 fork 出的子进程写栈缺页、多次 fork 后帧耗尽 |
 | libc-test / iozone / lmbench / iperf / cyclictest / ltp / netperf | ❌ 未测 |
-| unixbench | ⚠️ 已构建 8 个测试程序（dhry2reg/syscall/context1/pipe/spawn/execl/fstime/looper），
-但卡在 `alarm()+SIGALRM`：UnixBench 用信号来停止计时循环，内核目前不投递信号 |
+| unixbench | ⚠️ 可产出 11–17 行结果（DHRY2/SYSCALL/CONTEXT/PIPE/SPAWN/9×fstime/3×SHELL），
+但组尾会出现内核 panic（processor.rs / address.rs），且 FS_READ/COPY 测得 0 KBps |
+| 信号支持 | ✅ `setitimer(103)` + `rt_sigaction(134)` + `rt_sigreturn(139)`，SIGALRM 可正常投递 |
 
 ## 复现方式
 
