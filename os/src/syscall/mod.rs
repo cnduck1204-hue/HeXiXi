@@ -6,7 +6,9 @@ const SYSCALL_MKDIRAT: usize = 34;
 const SYSCALL_UNLINKAT: usize = 35;
 const SYSCALL_CHDIR: usize = 49;
 const SYSCALL_FSTAT: usize = 80;
+const SYSCALL_RENAMEAT: usize = 38;
 const SYSCALL_FCNTL: usize = 25;
+const SYSCALL_UTIMENSAT: usize = 88;
 const SYSCALL_IOCTL: usize = 29;
 const SYSCALL_SENDFILE: usize = 71;
 const SYSCALL_PPOLL: usize = 73;
@@ -71,6 +73,8 @@ use thread::*;
 pub fn syscall(syscall_id: usize, args: [usize; 4]) -> isize {
     match syscall_id {
         SYSCALL_FCNTL => sys_fcntl(args[0], args[1], args[2]),
+        SYSCALL_UTIMENSAT => 0,
+        SYSCALL_RENAMEAT => sys_renameat(args[1] as *const u8, args[3] as *const u8),
         SYSCALL_IOCTL => sys_ioctl(),
         SYSCALL_PPOLL => sys_ppoll(args[0] as *mut u8, args[1]),
         SYSCALL_SENDFILE => sys_sendfile(args[0], args[1], args[3]),

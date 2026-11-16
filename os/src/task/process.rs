@@ -41,6 +41,10 @@ pub struct ProcessControlBlockInner {
     pub brk: usize,
     /// mmap 分配起点（向上增长）
     pub mmap_top: usize,
+    /// 目录 fd -> 路径（getdents 需要知道列哪个目录）
+    pub dir_paths: alloc::collections::BTreeMap<usize, String>,
+    /// 目录 fd -> 已读条目偏移
+    pub dir_offsets: alloc::collections::BTreeMap<usize, usize>,
 }
 
 impl ProcessControlBlockInner {
@@ -112,6 +116,8 @@ impl ProcessControlBlock {
                     brk_base: 0,
                     brk: 0,
                     mmap_top: 0x1000_0000,
+                    dir_paths: alloc::collections::BTreeMap::new(),
+                    dir_offsets: alloc::collections::BTreeMap::new(),
                 })
             },
         });
@@ -291,6 +297,8 @@ impl ProcessControlBlock {
                     brk_base: 0,
                     brk: 0,
                     mmap_top: 0x1000_0000,
+                    dir_paths: alloc::collections::BTreeMap::new(),
+                    dir_offsets: alloc::collections::BTreeMap::new(),
                 })
             },
         });

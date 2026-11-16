@@ -136,6 +136,10 @@ fn read_file_all_inner(name: &str) -> Option<Vec<u8>> {
 
 /// 打开文件并返回统一的 File 对象（供系统调用使用）
 pub fn open_dyn(name: &str, flags: OpenFlags) -> Option<Arc<dyn File + Send + Sync>> {
+    // 根目录用一个伪文件代表，供 getdents 使用
+    if is_root_path(name) && EXT4.is_some() {
+        return Some(Arc::new(OverlayFile::new(overlay_create("/.rootdir"))));
+    }
     if let Some(d) = overlay_get(name) {
         return Some(Arc::new(OverlayFile::new(d)));
     }
@@ -191,3 +195,42 @@ pub fn names() -> Vec<String> {
     }
 }
 pub use stdio::{Stdin, Stdout};
+
+/// 路径是否是目录
+pub fn is_dir_path(name: &str) -> bool {
+    let name = name.trim_start_matches("./").trim_start_matches('/');
+    if name.is_empty() || name == "." {
+        return true;
+    }
+    if let Some(fs) = EXT4.as_ref() {
+        return fs.lookup(name).map(|i| i.is_dir()).unwrap_or(false);
+    }
+    false
+}
+
+/// 列出某个目录下的条目（名字, inode, 类型）
+pub fn list_dir_path(name: &str) -> Vec<(String, u32, u8)> {
+    let name = name.trim_start_matches("./").trim_start_matches('/');
+    if let Some(fs) = EXT4.as_ref() {
+        let inode = if name.is_empty() || name == "." {
+            fs.inode(2)
+        } else {
+            fs.lookup(name)
+        };
+        if let Some(ino) = inode {
+            return fs.list_dir(&ino);
+        }
+    }
+    // easy-fs：只有扁平根目录
+    root_names()
+        .into_iter()
+        .enumerate()
+        .map(|(i, n)| (n, (i + 1) as u32, 1u8))
+        .collect()
+}
+
+/// 在 open_dyn 里处理根目录等特殊路径
+pub fn is_root_path(name: &str) -> bool {
+    let n = name.trim_start_matches("./").trim_start_matches('/');
+    n.is_empty() || n == "."
+}

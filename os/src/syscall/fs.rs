@@ -158,6 +158,9 @@ pub fn sys_openat(_dirfd: isize, path: *const u8, flags: u32, _mode: u32) -> isi
         let mut inner = process.inner_exclusive_access();
         let fd = inner.alloc_fd();
         inner.fd_table[fd] = Some(inode);
+        if crate::fs::is_dir_path(path.as_str()) {
+            inner.dir_paths.insert(fd, path.clone());
+        }
         fd as isize
     } else {
         -1
@@ -270,11 +273,29 @@ pub fn sys_mount_stub() -> isize {
 }
 
 /// getdents64(61)：枚举 easy-fs 根目录
-pub fn sys_getdents64(_fd: usize, buf: *mut u8, len: usize) -> isize {
+pub fn sys_getdents64(fd: usize, buf: *mut u8, len: usize) -> isize {
     let token = current_user_token();
-    let names = crate::fs::names();
+    let dir = {
+        let process = current_process();
+        let inner = process.inner_exclusive_access();
+        inner.dir_paths.get(&fd).cloned().unwrap_or_default()
+    };
+    // 支持多次读取直到 EOF（busybox 的 readdir 依赖）
+    let (names, mut offset) = {
+        let process = current_process();
+        let inner = process.inner_exclusive_access();
+        let names: alloc::vec::Vec<alloc::string::String> = crate::fs::list_dir_path(dir.as_str())
+            .into_iter()
+            .map(|(n, _, _)| n)
+            .collect();
+        let offset = inner.dir_offsets.get(&fd).copied().unwrap_or(0);
+        (names, offset)
+    };
+    if offset >= names.len() {
+        return 0;
+    }
     let mut out: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-    for (i, name) in names.iter().enumerate() {
+    for (i, name) in names.iter().enumerate().skip(offset) {
         // struct linux_dirent64 { u64 d_ino; s64 d_off; u16 d_reclen; u8 d_type; char d_name[]; }
         let reclen = (19 + name.len() + 1 + 7) & !7usize;
         if out.len() + reclen > len {
@@ -286,6 +307,12 @@ pub fn sys_getdents64(_fd: usize, buf: *mut u8, len: usize) -> isize {
         out[start + 16..start + 18].copy_from_slice(&(reclen as u16).to_le_bytes());
         out[start + 18] = 8; // DT_REG
         out[start + 19..start + 19 + name.len()].copy_from_slice(name.as_bytes());
+        offset = i + 1;
+    }
+    {
+        let process = current_process();
+        let mut inner = process.inner_exclusive_access();
+        inner.dir_offsets.insert(fd, offset);
     }
     let n = out.len();
     for (i, b) in out.iter().enumerate() {
@@ -309,9 +336,12 @@ fn write_stat(token: usize, st: *mut u8, size: usize, mode: u32) {
 /// newfstatat(79)：按路径取文件信息
 pub fn sys_newfstatat(path: *const u8, st: *mut u8) -> isize {
     let token = current_user_token();
-    let p = translated_str(token, path);
-    let p = crate::fs::resolve_path(&p);
-    let p = if p.is_empty() || p == "." { alloc::string::String::from("mnt") } else { p };
+    let raw = translated_str(token, path);
+    let p = crate::fs::resolve_path(&raw);
+    if crate::fs::is_dir_path(p.as_str()) {
+        write_stat(token, st, 4096, 0o40755);
+        return 0;
+    }
     match crate::fs::read_file_all(p.as_str()) {
         Some(data) => {
             write_stat(token, st, data.len(), 0o100644);
@@ -322,6 +352,25 @@ pub fn sys_newfstatat(path: *const u8, st: *mut u8) -> isize {
 }
 
 /// fcntl(25)：busybox sh 用 F_DUPFD 复制脚本 fd，必须返回真实的 fd
+/// renameat(38)：在 overlay 里做重命名
+pub fn sys_renameat(oldpath: *const u8, newpath: *const u8) -> isize {
+    let token = current_user_token();
+    let old = translated_str(token, oldpath);
+    let new = translated_str(token, newpath);
+    let old = crate::fs::resolve_path(&old);
+    let new = crate::fs::resolve_path(&new);
+    match crate::fs::overlay_get(old.as_str()) {
+        Some(data) => {
+            let bytes = data.exclusive_access().clone();
+            let dst = crate::fs::overlay_create(new.as_str());
+            *dst.exclusive_access() = bytes;
+            crate::fs::overlay_remove(old.as_str());
+            0
+        }
+        None => -2,
+    }
+}
+
 pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> isize {
     const F_DUPFD: usize = 0;
     const F_GETFD: usize = 1;
