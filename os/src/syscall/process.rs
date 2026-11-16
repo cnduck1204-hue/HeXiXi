@@ -72,9 +72,10 @@ pub fn sys_exec(path: *const u8, mut args: *const usize) -> isize {
             let (prog, interp_arg, interp_data) = if let Some(d) = crate::fs::read_file_all(interp_name) {
                 (alloc::string::String::from(interp_name), extra.map(|s| alloc::string::String::from(s)), d)
             } else if crate::fs::exists("busybox") {
+                // 回退到 busybox 时用 sh 解释（#!/bin/bash 也能跑）
                 let arg = match extra {
                     Some(s) => alloc::string::String::from(s),
-                    None => alloc::string::String::from(basename),
+                    None => alloc::string::String::from("sh"),
                 };
                 match crate::fs::read_file_all("busybox") {
                     Some(d) => (alloc::string::String::from("busybox"), Some(arg), d),

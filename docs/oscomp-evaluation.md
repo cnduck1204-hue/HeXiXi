@@ -36,7 +36,9 @@ ELF 和 `xxx_testcode.sh` 脚本。内核需要在启动后：
 | lua 组 | ✅ **9/9 全通过**（runner 直接驱动 lua 解释器） |
 | busybox 组 | ✅ 55 条命令中 **49 条成功**（剩 df/dmesg/ps/hwclock/which/后台 kill） |
 | libcbench 组 | ⚠️ 能启动并输出标记，但 fork 出的子进程写栈缺页、多次 fork 后帧耗尽 |
-| libc-test / unixbench / iozone / lmbench / iperf / cyclictest / ltp / netperf | ❌ 未测 |
+| libc-test / iozone / lmbench / iperf / cyclictest / ltp / netperf | ❌ 未测 |
+| unixbench | ⚠️ 已构建 8 个测试程序（dhry2reg/syscall/context1/pipe/spawn/execl/fstime/looper），
+但卡在 `alarm()+SIGALRM`：UnixBench 用信号来停止计时循环，内核目前不投递信号 |
 
 ## 复现方式
 
