@@ -28,12 +28,32 @@ ELF 和 `xxx_testcode.sh` 脚本。内核需要在启动后：
 | 项 | 状态 |
 |---|---|
 | `make all` 产出 `kernel-rv` | ✅ 根目录 Makefile 已实现 |
-| basic 组用例 | ✅ 本地 26/26 全通过 |
-| 开机自动执行全部用例 | ✅ 磁盘存在 `run_tests` 标记时，内核用 `autorun` 作为 initproc |
+| 从 EXT4 盘启动（扫描、读文件、执行） | ✅ 只读 EXT4 驱动（超级块/块组/inode/extent/目录） |
+| 解析 `*_testcode.sh` | ✅ 优先用盘里的 `busybox sh`，无 busybox 时用内置 mini shell |
 | 输出 `#### OS COMP TEST GROUP ####` 标记 | ✅ |
 | 跑完自动关机 | ✅（init 以 0 退出 → `exit_success`） |
-| 扫描官方 EXT4 测试盘 | ❌ 未实现 |
-| 其余 11 组（busybox/lua/libc-test/…） | ❌ 未测 |
+| basic 组 | ✅ **32/32 全通过**（官方布局 EXT4 盘 + 真实 busybox sh） |
+| lua 组 | ✅ **9/9 全通过**（runner 直接驱动 lua 解释器） |
+| busybox 组 | ✅ 55 条命令中 **49 条成功**（剩 df/dmesg/ps/hwclock/which/后台 kill） |
+| libcbench 组 | ⚠️ 能启动并输出标记，但 fork 出的子进程写栈缺页、多次 fork 后帧耗尽 |
+| libc-test / unixbench / iozone / lmbench / iperf / cyclictest / ltp / netperf | ❌ 未测 |
+
+## 复现方式
+
+```bash
+# 1) 构建用例二进制（basic 26 个 + test_echo）
+tools/oscomp/build_tests.sh
+# 2) 构建 busybox / lua
+tools/oscomp/build_busybox.sh
+tools/oscomp/build_lua.sh
+# 3) 生成官方布局 EXT4 盘
+tools/oscomp/make_official_image.sh
+# 4) 启动
+cd os && make build && qemu-system-riscv64 -machine virt -m 256M -nographic \
+  -bios default -kernel target/riscv64gc-unknown-none-elf/release/os.bin \
+  -drive file=$HOME/oscomp-work/official/disk.img,if=none,format=raw,id=x0 \
+  -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
+```
 
 ## 关键阻塞：EXT4
 
