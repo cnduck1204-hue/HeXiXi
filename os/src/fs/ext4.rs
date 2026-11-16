@@ -3,6 +3,10 @@
 //! 目前支持：超级块、块组描述符、inode 读取、extent 树（深度 0/1）、目录项遍历。
 
 use crate::drivers::block::BLOCK_DEVICE;
+use crate::fs::File;
+use crate::mm::UserBuffer;
+use crate::sync::UPSafeCell;
+use alloc::sync::Arc;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -257,4 +261,49 @@ pub fn probe() -> bool {
         }
     }
     true
+}
+
+/// 把 EXT4 的只读 inode 包装成内核的 File
+pub struct Ext4File {
+    fs: Arc<Ext4Fs>,
+    inode: Inode,
+    offset: UPSafeCell<usize>,
+}
+
+impl Ext4File {
+    pub fn new(fs: Arc<Ext4Fs>, inode: Inode) -> Self {
+        Self {
+            fs,
+            inode,
+            offset: unsafe { UPSafeCell::new(0) },
+        }
+    }
+}
+
+impl File for Ext4File {
+    fn readable(&self) -> bool {
+        true
+    }
+    fn writable(&self) -> bool {
+        false
+    }
+    fn read(&self, buf: UserBuffer) -> usize {
+        let data = self.fs.read_file(&self.inode);
+        let mut off = self.offset.exclusive_access();
+        let mut n = 0usize;
+        for byte_ptr in buf {
+            if *off >= data.len() {
+                break;
+            }
+            unsafe {
+                byte_ptr.write_volatile(data[*off]);
+            }
+            *off += 1;
+            n += 1;
+        }
+        n
+    }
+    fn write(&self, _buf: UserBuffer) -> usize {
+        panic!("EXT4 root is read-only");
+    }
 }
