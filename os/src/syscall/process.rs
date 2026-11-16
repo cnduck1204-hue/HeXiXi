@@ -87,7 +87,8 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
             let child = inner.children.remove(idx);
             let found_pid = child.getpid();
             let exit_code = child.inner_exclusive_access().exit_code;
-            *translated_refmut(inner.memory_set.token(), exit_code_ptr) = exit_code;
+            // Linux 的 wait status 编码：退出码放在高 8 位
+            *translated_refmut(inner.memory_set.token(), exit_code_ptr) = exit_code << 8;
             return found_pid as isize;
         }
         drop(inner);

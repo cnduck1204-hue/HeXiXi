@@ -134,10 +134,8 @@ pub fn sys_ioctl() -> isize {
 }
 
 /// openat(2)：只支持 AT_FDCWD；把 Linux 的 open flags 翻译成内核 OpenFlags
-pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, _mode: u32) -> isize {
-    if dirfd != -100 {
-        return -1;
-    }
+pub fn sys_openat(_dirfd: isize, path: *const u8, flags: u32, _mode: u32) -> isize {
+    // easy-fs 是扁平命名空间，忽略 dirfd，按绝对名字查找
     let token = current_user_token();
     // easy-fs 是扁平命名空间：去掉 "./" 与前导 "/"
     let path = translated_str(token, path);
@@ -163,4 +161,123 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, _mode: u32) -> isiz
     } else {
         -1
     }
+}
+
+/// dup3(24)：把 oldfd 复制到指定的 newfd
+pub fn sys_dup3(oldfd: usize, newfd: usize, _flags: u32) -> isize {
+    let process = current_process();
+    let mut inner = process.inner_exclusive_access();
+    if oldfd >= inner.fd_table.len() || oldfd == newfd {
+        return -1;
+    }
+    let file = match &inner.fd_table[oldfd] {
+        Some(f) => f.clone(),
+        None => return -1,
+    };
+    while inner.fd_table.len() <= newfd {
+        inner.fd_table.push(None);
+    }
+    inner.fd_table[newfd] = Some(file);
+    newfd as isize
+}
+
+/// chdir(49)：easy-fs 无目录，仅记录字符串
+pub fn sys_chdir(path: *const u8) -> isize {
+    let token = current_user_token();
+    let path = translated_str(token, path);
+    let p = alloc::string::String::from(path.trim_start_matches("./").trim_start_matches('/'));
+    let process = current_process();
+    process.inner_exclusive_access().cwd = alloc::string::String::from(p.as_str());
+    0
+}
+
+/// getcwd(17)：返回 "[/cwd]" 的形式
+pub fn sys_getcwd(buf: *mut u8, size: usize) -> isize {
+    let token = current_user_token();
+    let cwd = current_process().inner_exclusive_access().cwd.clone();
+    let mut s = alloc::string::String::from("/");
+    if !cwd.is_empty() && cwd != "/" {
+        s.push_str(cwd.as_str());
+    }
+    let n = s.len().min(size.saturating_sub(1));
+    for (i, c) in s.as_bytes().iter().take(n).enumerate() {
+        *translated_refmut(token, (buf as usize + i) as *mut u8) = *c;
+    }
+    *translated_refmut(token, (buf as usize + n) as *mut u8) = 0;
+    buf as isize
+}
+
+/// mkdirat(34)：easy-fs 无目录，用空文件模拟
+pub fn sys_mkdirat(_dirfd: isize, path: *const u8) -> isize {
+    let token = current_user_token();
+    let p = translated_str(token, path);
+    let p = alloc::string::String::from(p.trim_start_matches("./").trim_start_matches('/'));
+    match open_file(p.as_str(), OpenFlags::CREATE | OpenFlags::RDONLY) {
+        Some(_) => 0,
+        None => -1,
+    }
+}
+
+/// unlinkat(35)：记入墓碑集合，之后 open 找不到它
+pub fn sys_unlinkat(_dirfd: isize, path: *const u8) -> isize {
+    let token = current_user_token();
+    let p = translated_str(token, path);
+    let p = alloc::string::String::from(p.trim_start_matches("./").trim_start_matches('/'));
+    crate::fs::mark_unlinked(p.as_str());
+    0
+}
+
+/// fstat(80)：填 riscv64 的 struct stat（128 字节）
+pub fn sys_fstat(fd: usize, st: *mut u8) -> isize {
+    let token = current_user_token();
+    let process = current_process();
+    let inner = process.inner_exclusive_access();
+    if fd >= inner.fd_table.len() || inner.fd_table[fd].is_none() {
+        return -1;
+    }
+    drop(inner);
+    let mut buf = [0u8; 128];
+    // st_ino = fd
+    buf[8..16].copy_from_slice(&(fd as u64).to_le_bytes());
+    // st_mode = S_IFREG | 0644
+    buf[16..20].copy_from_slice(&(0o100644u32).to_le_bytes());
+    // st_nlink = 1
+    buf[20..24].copy_from_slice(&1u32.to_le_bytes());
+    // st_size = 0（easy-fs 未暴露长度）
+    // st_blksize = 512
+    buf[56..60].copy_from_slice(&512u32.to_le_bytes());
+    for (i, b) in buf.iter().enumerate() {
+        *translated_refmut(token, (st as usize + i) as *mut u8) = *b;
+    }
+    0
+}
+
+/// mount / umount2：无真实挂载，直接成功
+pub fn sys_mount_stub() -> isize {
+    0
+}
+
+/// getdents64(61)：枚举 easy-fs 根目录
+pub fn sys_getdents64(_fd: usize, buf: *mut u8, len: usize) -> isize {
+    let token = current_user_token();
+    let names = crate::fs::root_names();
+    let mut out: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        // struct linux_dirent64 { u64 d_ino; s64 d_off; u16 d_reclen; u8 d_type; char d_name[]; }
+        let reclen = (19 + name.len() + 1 + 7) & !7usize;
+        if out.len() + reclen > len {
+            break;
+        }
+        let start = out.len();
+        out.resize(start + reclen, 0);
+        out[start..start + 8].copy_from_slice(&((i + 1) as u64).to_le_bytes());
+        out[start + 16..start + 18].copy_from_slice(&(reclen as u16).to_le_bytes());
+        out[start + 18] = 8; // DT_REG
+        out[start + 19..start + 19 + name.len()].copy_from_slice(name.as_bytes());
+    }
+    let n = out.len();
+    for (i, b) in out.iter().enumerate() {
+        *translated_refmut(token, (buf as usize + i) as *mut u8) = *b;
+    }
+    n as isize
 }

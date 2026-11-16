@@ -82,7 +82,31 @@ impl OpenFlags {
     }
 }
 
+lazy_static! {
+    /// 已 unlink 的文件名（easy-fs 不支持删除目录项，用墓碑模拟）
+    static ref UNLINKED: crate::sync::UPSafeCell<alloc::collections::BTreeSet<alloc::string::String>> =
+        unsafe { crate::sync::UPSafeCell::new(alloc::collections::BTreeSet::new()) };
+}
+
+pub fn mark_unlinked(name: &str) {
+    UNLINKED
+        .exclusive_access()
+        .insert(alloc::string::String::from(name));
+}
+
+pub fn is_unlinked(name: &str) -> bool {
+    UNLINKED.exclusive_access().contains(name)
+}
+
+/// 根目录下的所有文件名（easy-fs 是扁平命名空间）
+pub fn root_names() -> alloc::vec::Vec<alloc::string::String> {
+    ROOT_INODE.ls()
+}
+
 pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
+    if is_unlinked(name) {
+        return None;
+    }
     let (readable, writable) = flags.read_write();
     if flags.contains(OpenFlags::CREATE) {
         if let Some(inode) = ROOT_INODE.find(name) {

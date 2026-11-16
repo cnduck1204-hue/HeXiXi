@@ -33,6 +33,8 @@ pub struct ProcessControlBlockInner {
     pub mutex_list: Vec<Option<Arc<dyn Mutex>>>,
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    /// 当前工作目录（easy-fs 是扁平命名空间，仅记录字符串）
+    pub cwd: String,
 }
 
 impl ProcessControlBlockInner {
@@ -100,6 +102,7 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    cwd: String::from("/"),
                 })
             },
         });
@@ -268,6 +271,7 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    cwd: String::from("/"),
                 })
             },
         });

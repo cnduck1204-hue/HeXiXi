@@ -1,3 +1,11 @@
+const SYSCALL_GETCWD: usize = 17;
+const SYSCALL_UMOUNT2: usize = 39;
+const SYSCALL_MOUNT: usize = 40;
+const SYSCALL_GETDENTS64: usize = 61;
+const SYSCALL_MKDIRAT: usize = 34;
+const SYSCALL_UNLINKAT: usize = 35;
+const SYSCALL_CHDIR: usize = 49;
+const SYSCALL_FSTAT: usize = 80;
 const SYSCALL_IOCTL: usize = 29;
 const SYSCALL_DUP_LEGACY: usize = 23;
 const SYSCALL_DUP: usize = 24;
@@ -49,7 +57,15 @@ pub fn syscall(syscall_id: usize, args: [usize; 4]) -> isize {
     match syscall_id {
         SYSCALL_IOCTL => sys_ioctl(),
         SYSCALL_DUP_LEGACY => sys_dup(args[0]),
-        SYSCALL_DUP => sys_dup(args[0]),
+        SYSCALL_DUP => sys_dup3(args[0], args[1], args[2] as u32),
+        SYSCALL_GETCWD => sys_getcwd(args[0] as *mut u8, args[1]),
+        SYSCALL_MOUNT => sys_mount_stub(),
+        SYSCALL_UMOUNT2 => sys_mount_stub(),
+        SYSCALL_GETDENTS64 => sys_getdents64(args[0], args[1] as *mut u8, args[2]),
+        SYSCALL_MKDIRAT => sys_mkdirat(args[0] as isize, args[1] as *const u8),
+        SYSCALL_UNLINKAT => sys_unlinkat(args[0] as isize, args[1] as *const u8),
+        SYSCALL_CHDIR => sys_chdir(args[1] as *const u8),
+        SYSCALL_FSTAT => sys_fstat(args[0], args[1] as *mut u8),
         SYSCALL_OPEN => sys_openat(args[0] as isize, args[1] as *const u8, args[2] as u32, args[3] as u32),
         SYSCALL_CLOSE => sys_close(args[0]),
         SYSCALL_PIPE => sys_pipe(args[0] as *mut usize),
