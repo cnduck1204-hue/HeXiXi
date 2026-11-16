@@ -306,6 +306,17 @@ impl File for Ext4File {
     fn size(&self) -> usize {
         self.inode.size as usize
     }
+    fn seek(&self, offset: isize) -> isize {
+        let len = self.inode.size as isize;
+        let mut off = self.offset.exclusive_access();
+        let new = (*off as isize).saturating_add(offset);
+        if new < 0 {
+            return -1;
+        }
+        let new = if new > len { len } else { new };
+        *off = new as usize;
+        new
+    }
     fn write(&self, _buf: UserBuffer) -> usize {
         panic!("EXT4 root is read-only");
     }

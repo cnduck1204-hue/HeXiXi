@@ -421,3 +421,35 @@ pub fn sys_ppoll(fds: *mut u8, nfds: usize) -> isize {
 pub fn sys_sendfile(_in_fd: usize, _out_fd: usize, _count: usize) -> isize {
     -38
 }
+
+/// statfs(43)/fstatfs(44)：返回最小的 ext4 统计信息
+pub fn sys_statfs(buf: *mut u8) -> isize {
+    let token = current_user_token();
+    let mut b = [0u8; 120];
+    // f_type, f_bsize, f_blocks, f_bfree, f_bavail, f_files, f_ffree, f_namelen
+    b[0..8].copy_from_slice(&0xEF53u64.to_le_bytes());
+    b[8..16].copy_from_slice(&4096u64.to_le_bytes());
+    b[16..24].copy_from_slice(&16384u64.to_le_bytes());
+    b[24..32].copy_from_slice(&12000u64.to_le_bytes());
+    b[32..40].copy_from_slice(&12000u64.to_le_bytes());
+    b[40..48].copy_from_slice(&4096u64.to_le_bytes());
+    b[48..56].copy_from_slice(&3000u64.to_le_bytes());
+    b[56..64].copy_from_slice(&255u64.to_le_bytes());
+    for (i, byte) in b.iter().enumerate() {
+        *translated_refmut(token, (buf as usize + i) as *mut u8) = *byte;
+    }
+    0
+}
+
+/// lseek(62)
+pub fn sys_lseek(fd: usize, offset: isize) -> isize {
+    let process = current_process();
+    let inner = process.inner_exclusive_access();
+    if fd >= inner.fd_table.len() {
+        return -1;
+    }
+    match &inner.fd_table[fd] {
+        Some(f) => f.seek(offset),
+        None => -1,
+    }
+}

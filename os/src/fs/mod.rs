@@ -14,6 +14,10 @@ pub trait File: Send + Sync {
     fn size(&self) -> usize {
         0
     }
+    /// 调整读写偏移，返回新偏移
+    fn seek(&self, _offset: isize) -> isize {
+        -1
+    }
 }
 
 pub use inode::{is_unlinked, list_apps, mark_unlinked, open_file, root_names, OSInode, OpenFlags};
@@ -99,6 +103,17 @@ impl File for OverlayFile {
     fn size(&self) -> usize {
         self.data.exclusive_access().len()
     }
+    fn seek(&self, offset: isize) -> isize {
+        let len = self.data.exclusive_access().len() as isize;
+        let mut off = self.offset.exclusive_access();
+        let new = (*off as isize).saturating_add(offset);
+        if new < 0 {
+            return -1;
+        }
+        let new = if new > len { len } else { new };
+        *off = new as usize;
+        new
+    }
     fn write(&self, buf: UserBuffer) -> usize {
         let mut data = self.data.exclusive_access();
         let mut off = self.offset.exclusive_access();
@@ -123,6 +138,9 @@ pub fn read_file_all(name: &str) -> Option<Vec<u8>> {
 }
 
 fn read_file_all_inner(name: &str) -> Option<Vec<u8>> {
+    if let Some(v) = virtual_file(name) {
+        return Some(v);
+    }
     if let Some(d) = overlay_get(name) {
         return Some(d.exclusive_access().clone());
     }
@@ -136,6 +154,11 @@ fn read_file_all_inner(name: &str) -> Option<Vec<u8>> {
 
 /// 打开文件并返回统一的 File 对象（供系统调用使用）
 pub fn open_dyn(name: &str, flags: OpenFlags) -> Option<Arc<dyn File + Send + Sync>> {
+    if let Some(v) = virtual_file(name) {
+        let d = overlay_create(name);
+        *d.exclusive_access() = v;
+        return Some(Arc::new(OverlayFile::new(d)));
+    }
     // 根目录用一个伪文件代表，供 getdents 使用
     if is_root_path(name) && EXT4.is_some() {
         return Some(Arc::new(OverlayFile::new(overlay_create("/.rootdir"))));
@@ -196,10 +219,62 @@ pub fn names() -> Vec<String> {
 }
 pub use stdio::{Stdin, Stdout};
 
+/// 最小 /proc 虚拟文件（供 busybox 的 df/free/uptime 等使用）
+pub fn virtual_file(name: &str) -> Option<Vec<u8>> {
+    let n = name.trim_start_matches("./").trim_start_matches('/');
+    let text: &str = match n {
+        "proc/meminfo" => {
+            "MemTotal:         262144 kB\nMemFree:          200000 kB\nMemAvailable:     200000 kB\nBuffers:               0 kB\nCached:                0 kB\n"
+        }
+        "proc/loadavg" => "0.00 0.00 0.00 1/1 1\n",
+        "proc/uptime" => "100.00 100.00\n",
+        "proc/version" => "Linux version 6.0.0-rcore (rcore@local) #1\n",
+        "proc/stat" => "cpu  0 0 0 0 0 0 0 0 0 0\n",
+        "proc/cpuinfo" => "processor\t: 0\nisa\t\t: rv64imafdc\n",
+        "proc/filesystems" => "nodev\tproc\nnodev\tsysfs\n\text4\n",
+        "proc/mounts" => "/dev/root / ext4 rw,relatime 0 0\nproc /proc proc rw 0 0\n",
+        _ => {
+            // /proc/<pid>/{stat,cmdline,status}
+            if let Some(rest) = n.strip_prefix("proc/") {
+                let mut it = rest.splitn(2, '/');
+                let pid = it.next().unwrap_or("");
+                let file = it.next().unwrap_or("");
+                if pid.chars().all(|c| c.is_ascii_digit()) && !pid.is_empty() {
+                    let p: u32 = pid.parse().unwrap_or(1);
+                    return Some(match file {
+                        "stat" => Vec::from(
+                            alloc::format!(
+                                "{} (init) S 1 1 1 0 -1 0 0 0 0 0 10 10 0 0 20 0 1 0 1 0 100 0 0\n",
+                                p
+                            )
+                            .as_bytes(),
+                        ),
+                        "cmdline" => Vec::from(alloc::format!("init\0").as_bytes()),
+                        "status" => Vec::from(
+                            alloc::format!("Name:\tinit\nPid:\t{}\nState:\tS\n", p).as_bytes(),
+                        ),
+                        _ => return None,
+                    });
+                }
+            }
+            return None;
+        }
+    };
+    Some(Vec::from(text.as_bytes()))
+}
+
+/// /proc 下有哪些文件
+pub const PROC_FILES: &[&str] = &[
+    "meminfo", "loadavg", "uptime", "version", "stat", "cpuinfo", "filesystems", "mounts",
+];
+
 /// 路径是否是目录
 pub fn is_dir_path(name: &str) -> bool {
     let name = name.trim_start_matches("./").trim_start_matches('/');
     if name.is_empty() || name == "." {
+        return true;
+    }
+    if name == "proc" {
         return true;
     }
     if let Some(fs) = EXT4.as_ref() {
@@ -211,6 +286,17 @@ pub fn is_dir_path(name: &str) -> bool {
 /// 列出某个目录下的条目（名字, inode, 类型）
 pub fn list_dir_path(name: &str) -> Vec<(String, u32, u8)> {
     let name = name.trim_start_matches("./").trim_start_matches('/');
+    if name == "proc" {
+        let mut v: Vec<(String, u32, u8)> = PROC_FILES
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (String::from(*n), (100 + i) as u32, 1u8))
+            .collect();
+        // 伪进程目录，供 ps 使用
+        v.push((String::from("1"), 201, 2));
+        v.push((String::from("2"), 202, 2));
+        return v;
+    }
     if let Some(fs) = EXT4.as_ref() {
         let inode = if name.is_empty() || name == "." {
             fs.inode(2)
