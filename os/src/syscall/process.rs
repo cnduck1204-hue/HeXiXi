@@ -64,37 +64,37 @@ pub fn sys_exec(path: *const u8, mut args: *const usize) -> isize {
             let end = all_data.iter().position(|&c| c == b'\n').unwrap_or(all_data.len());
             let line = core::str::from_utf8(&all_data[2..end]).unwrap_or("").trim();
             let mut it = line.split_whitespace();
-            if let Some(interp) = it.next() {
-                let interp_name = interp.trim_start_matches('/');
-                let basename = interp_name.rsplit('/').next().unwrap_or(interp_name);
-                let mut new_args: Vec<String> = Vec::new();
-                let interp_data = if let Some(d) = crate::fs::read_file_all(interp_name) {
-                    new_args.push(alloc::string::String::from(interp_name));
-                    if let Some(extra) = it.next() {
-                        new_args.push(alloc::string::String::from(extra));
-                    }
-                    Some(d)
-                } else if crate::fs::exists("busybox") {
-                    // 没有 /bin/sh 时退回 busybox
-                    new_args.push(alloc::string::String::from("busybox"));
-                    new_args.push(alloc::string::String::from(basename));
-                    if let Some(extra) = it.next() {
-                        new_args.push(alloc::string::String::from(extra));
-                    }
-                    crate::fs::read_file_all("busybox")
-                } else {
-                    None
+            let interp = it.next().unwrap_or("");
+            let extra = it.next();
+            let interp_name = interp.trim_start_matches('/');
+            let basename = interp_name.rsplit('/').next().unwrap_or(interp_name);
+            // argv = [解释器, 可选解释器参数(缺省用 basename), 脚本, ...原参数]
+            let (prog, interp_arg, interp_data) = if let Some(d) = crate::fs::read_file_all(interp_name) {
+                (alloc::string::String::from(interp_name), extra.map(|s| alloc::string::String::from(s)), d)
+            } else if crate::fs::exists("busybox") {
+                let arg = match extra {
+                    Some(s) => alloc::string::String::from(s),
+                    None => alloc::string::String::from(basename),
                 };
-                if let Some(d) = interp_data {
-                    new_args.push(raw_path.clone());
-                    for a in args_vec.iter() {
-                        new_args.push(a.clone());
-                    }
-                    process.exec(d.as_slice(), new_args);
-                    return 0;
+                match crate::fs::read_file_all("busybox") {
+                    Some(d) => (alloc::string::String::from("busybox"), Some(arg), d),
+                    None => return -1,
                 }
+            } else {
+                return -1;
+            };
+            let mut new_args: Vec<String> = Vec::new();
+            new_args.push(prog);
+            if let Some(a) = interp_arg {
+                new_args.push(a);
             }
-            return -1;
+            new_args.push(raw_path.clone());
+            // Linux 的 binfmt_script：新 argv = [解释器, 可选参数, 脚本路径, 原 argv[1..]]
+            for a in args_vec.iter().skip(1) {
+                new_args.push(a.clone());
+            }
+            process.exec(interp_data.as_slice(), new_args);
+            return 0;
         }
         let argc = args_vec.len();
         process.exec(all_data.as_slice(), args_vec);

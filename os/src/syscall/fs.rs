@@ -453,3 +453,33 @@ pub fn sys_lseek(fd: usize, offset: isize) -> isize {
         None => -1,
     }
 }
+
+/// readv(65)：把多个 iovec 拼成一个 UserBuffer 后读出
+pub fn sys_readv(fd: usize, iov: *const u8, iovcnt: usize) -> isize {
+    let token = current_user_token();
+    let process = current_process();
+    let inner = process.inner_exclusive_access();
+    if fd >= inner.fd_table.len() {
+        return -1;
+    }
+    if let Some(file) = &inner.fd_table[fd] {
+        if !file.readable() {
+            return -1;
+        }
+        let file = file.clone();
+        drop(inner);
+        let mut buffers = alloc::vec::Vec::new();
+        for i in 0..iovcnt {
+            let entry = (iov as usize + i * 16) as *const usize;
+            let base = *translated_ref(token, entry);
+            let len = *translated_ref(token, (entry as usize + 8) as *const usize);
+            if len == 0 {
+                continue;
+            }
+            buffers.append(&mut translated_byte_buffer(token, base as *const u8, len));
+        }
+        file.read(UserBuffer::new(buffers)) as isize
+    } else {
+        -1
+    }
+}
