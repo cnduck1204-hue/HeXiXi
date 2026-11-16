@@ -63,6 +63,7 @@ impl FrameAllocator for StackFrameAllocator {
         if let Some(ppn) = self.recycled.pop() {
             Some(ppn.into())
         } else if self.current == self.end {
+            println!("[mm] OUT OF FRAMES: current={} end={}", self.current, self.end);
             None
         } else {
             self.current += 1;
@@ -91,9 +92,14 @@ pub fn init_frame_allocator() {
     extern "C" {
         fn ekernel();
     }
-    FRAME_ALLOCATOR.exclusive_access().init(
-        PhysAddr::from(ekernel as usize).ceil(),
-        PhysAddr::from(MEMORY_END).floor(),
+    let start = PhysAddr::from(ekernel as usize).ceil();
+    let end = PhysAddr::from(MEMORY_END).floor();
+    FRAME_ALLOCATOR.exclusive_access().init(start, end);
+    println!(
+        "[mm] frame allocator: {:#x}..{:#x} = {} pages",
+        usize::from(start),
+        usize::from(end),
+        (usize::from(end) - usize::from(start)) / 0x1000
     );
 }
 

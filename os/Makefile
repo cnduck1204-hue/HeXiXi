@@ -93,6 +93,7 @@ run-inner: build
 ifeq ($(BOARD),qemu)
 	@qemu-system-riscv64 \
 		-machine virt \
+		-m 256M \
 		-nographic \
 		-bios default \
 		-kernel $(KERNEL_BIN) \

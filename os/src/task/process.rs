@@ -147,31 +147,80 @@ impl ProcessControlBlock {
         task_inner.res.as_mut().unwrap().ustack_base = ustack_base;
         task_inner.res.as_mut().unwrap().alloc_user_res();
         task_inner.trap_cx_ppn = task_inner.res.as_mut().unwrap().trap_cx_ppn();
-        // push arguments on user stack
-        let mut user_sp = task_inner.res.as_mut().unwrap().ustack_top();
-        user_sp -= (args.len() + 1) * core::mem::size_of::<usize>();
-        let argv_base = user_sp;
-        let mut argv: Vec<_> = (0..=args.len())
-            .map(|arg| {
-                translated_refmut(
-                    new_token,
-                    (argv_base + arg * core::mem::size_of::<usize>()) as *mut usize,
-                )
-            })
-            .collect();
-        *argv[args.len()] = 0;
-        for i in 0..args.len() {
-            user_sp -= args[i].len() + 1;
-            *argv[i] = user_sp;
-            let mut p = user_sp;
-            for c in args[i].as_bytes() {
+        // ---- 构造 Linux 进程启动栈 ----
+        // 低地址 -> 高地址：argc | argv[..] | NULL | NULL(envp) | auxv | 字符串/程序头/随机数
+        let mut sp = task_inner.res.as_mut().unwrap().ustack_top();
+        let argc = args.len();
+
+        // 1. 参数字符串（先放到高地址区）
+        let mut arg_ptrs: Vec<usize> = Vec::with_capacity(argc);
+        for arg in args.iter().rev() {
+            sp -= arg.len() + 1;
+            let mut p = sp;
+            for c in arg.as_bytes() {
                 *translated_refmut(new_token, p as *mut u8) = *c;
                 p += 1;
             }
             *translated_refmut(new_token, p as *mut u8) = 0;
+            arg_ptrs.push(sp);
         }
-        // make the user_sp aligned to 8B for k210 platform
-        user_sp -= user_sp % core::mem::size_of::<usize>();
+        arg_ptrs.reverse();
+
+        // 2. 程序头表副本（AT_PHDR 指向它）
+        let e_entry = u64::from_le_bytes(elf_data[0x18..0x20].try_into().unwrap()) as usize;
+        let e_phoff = u64::from_le_bytes(elf_data[0x20..0x28].try_into().unwrap()) as usize;
+        let e_phentsize = u16::from_le_bytes(elf_data[0x36..0x38].try_into().unwrap()) as usize;
+        let e_phnum = u16::from_le_bytes(elf_data[0x38..0x3a].try_into().unwrap()) as usize;
+        let phdr_len = e_phnum * e_phentsize;
+        sp -= phdr_len;
+        sp -= sp % 8;
+        let phdr_addr = sp;
+        for i in 0..phdr_len {
+            *translated_refmut(new_token, (phdr_addr + i) as *mut u8) = elf_data[e_phoff + i];
+        }
+
+        // 3. AT_RANDOM 的 16 字节
+        sp -= 16;
+        let random_addr = sp;
+        for i in 0..16usize {
+            *translated_refmut(new_token, (random_addr + i) as *mut u8) =
+                (i as u8).wrapping_mul(37).wrapping_add(11);
+        }
+
+        // 4. 数组区：argc / argv / envp / auxv 必须连续
+        let auxv: [(usize, usize); 15] = [
+            (3, phdr_addr),
+            (4, e_phentsize),
+            (5, e_phnum),
+            (6, 4096),
+            (9, e_entry),
+            (11, 0),
+            (12, 0),
+            (13, 0),
+            (14, 0),
+            (23, 0),
+            (25, random_addr),
+            (31, arg_ptrs.first().copied().unwrap_or(0)),
+            (17, 100),
+            (16, 0),
+            (0, 0),
+        ];
+        let words = 1 + argc + 1 + 1 + auxv.len() * 2;
+        sp -= words * core::mem::size_of::<usize>();
+        sp -= sp % 16;
+        let base = sp;
+        let sz = core::mem::size_of::<usize>();
+        *translated_refmut(new_token, base as *mut usize) = argc;
+        for i in 0..argc {
+            *translated_refmut(new_token, (base + (1 + i) * sz) as *mut usize) = arg_ptrs[i];
+        }
+        *translated_refmut(new_token, (base + (1 + argc) * sz) as *mut usize) = 0;
+        *translated_refmut(new_token, (base + (2 + argc) * sz) as *mut usize) = 0;
+        for (i, (t, v)) in auxv.iter().enumerate() {
+            *translated_refmut(new_token, (base + (3 + argc + i * 2) * sz) as *mut usize) = *t;
+            *translated_refmut(new_token, (base + (4 + argc + i * 2) * sz) as *mut usize) = *v;
+        }
+        let user_sp = base;
         // initialize trap_cx
         let mut trap_cx = TrapContext::app_init_context(
             entry_point,
@@ -181,7 +230,7 @@ impl ProcessControlBlock {
             trap_handler as usize,
         );
         trap_cx.x[10] = args.len();
-        trap_cx.x[11] = argv_base;
+        trap_cx.x[11] = user_sp + core::mem::size_of::<usize>();
         *task_inner.get_trap_cx() = trap_cx;
     }
 

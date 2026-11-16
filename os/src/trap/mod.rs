@@ -68,6 +68,12 @@ pub fn trap_handler() -> ! {
                 current_trap_cx().sepc,
             );
             */
+            println!(
+                "[fault] {:?} sepc={:#x} stval={:#x}",
+                scause.cause(),
+                current_trap_cx().sepc,
+                stval
+            );
             current_add_signal(SignalFlags::SIGSEGV);
         }
         Trap::Exception(Exception::IllegalInstruction) => {
