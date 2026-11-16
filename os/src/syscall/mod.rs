@@ -78,7 +78,7 @@ use process::*;
 use sync::*;
 use thread::*;
 
-pub fn syscall(syscall_id: usize, args: [usize; 4]) -> isize {
+pub fn syscall(syscall_id: usize, args: [usize; 5]) -> isize {
     match syscall_id {
         SYSCALL_FCNTL => sys_fcntl(args[0], args[1], args[2]),
         SYSCALL_UTIMENSAT => 0,
@@ -88,7 +88,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 4]) -> isize {
         SYSCALL_IOCTL => sys_ioctl(),
         SYSCALL_LSEEK => sys_lseek(args[0], args[1] as isize),
         SYSCALL_FUTEX => sys_futex(args[0], args[1], args[2]),
-        SYSCALL_CLONE => sys_clone_thread(args[0], args[1], args[2], args[3]),
+        SYSCALL_CLONE => sys_clone_thread(args[0], args[1], args[2], args[3], args[4]),
         SYSCALL_READV => sys_readv(args[0], args[1] as *const u8, args[2]),
         SYSCALL_PPOLL => sys_ppoll(args[0] as *mut u8, args[1]),
         SYSCALL_SENDFILE => sys_sendfile(args[0], args[1], args[3]),

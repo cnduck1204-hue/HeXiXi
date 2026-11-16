@@ -86,7 +86,7 @@ pub fn sys_waittid(tid: usize) -> i32 {
 
 /// clone(220) 的线程语义：CLONE_VM|CLONE_THREAD 时创建同进程内的新线程。
 /// musl 的 __clone 在子线程里需要：sp = stack 参数、tp = tls 参数、a0 = 0。
-pub fn sys_clone_thread(flags: usize, stack: usize, _ptid: usize, tls: usize) -> isize {
+pub fn sys_clone_thread(flags: usize, stack: usize, _ptid: usize, tls: usize, _ctid: usize) -> isize {
     const CLONE_VM: usize = 0x100;
     if flags & CLONE_VM == 0 {
         return super::process::sys_fork();

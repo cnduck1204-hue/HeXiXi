@@ -43,13 +43,22 @@ pub fn trap_handler() -> ! {
     set_kernel_trap_entry();
     let scause = scause::read();
     let stval = stval::read();
+    {
+        let tid = crate::task::current_task()
+            .map(|t| { let ti = t.inner_exclusive_access(); ti.res.as_ref().map(|r| r.tid).unwrap_or(0) })
+            .unwrap_or(0);
+        if tid > 0 {
+            let cx = current_trap_cx();
+            println!("[dbg] tid={} tp={:#x} sp={:#x} pc={:#x}", tid, cx.x[4], cx.x[2], cx.sepc);
+        }
+    }
     match scause.cause() {
         Trap::Exception(Exception::UserEnvCall) => {
             // jump to next instruction anyway
             let mut cx = current_trap_cx();
             cx.sepc += 4;
             // get system call return value
-            let result = syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12], cx.x[13]]);
+            let result = syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12], cx.x[13], cx.x[14]]);
             // cx is changed during sys_exec, so we have to call it again
             cx = current_trap_cx();
             cx.x[10] = result as usize;

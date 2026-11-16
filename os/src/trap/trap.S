@@ -16,7 +16,8 @@ __alltraps:
     sd x1, 1*8(sp)
     # skip sp(x2), we will save it later
     sd x3, 3*8(sp)
-    # skip tp(x4), application does not use it
+    # save tp(x4) —— pthread 需要每个线程有自己的线程指针
+    sd x4, 4*8(sp)
     # save x5~x31
     .set n, 5
     .rept 27
@@ -64,6 +65,7 @@ __restore:
         LOAD_GP %n
         .set n, n+1
     .endr
+    ld x4, 4*8(sp)
     # back to user stack
     ld sp, 2*8(sp)
     sret
