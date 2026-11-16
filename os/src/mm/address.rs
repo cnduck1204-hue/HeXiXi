@@ -168,8 +168,9 @@ impl PhysAddr {
             match (self.0 as *mut T).as_mut() {
                 Some(v) => v,
                 None => {
-                    println!("[mm] get_mut bad pa={:#x} sepc={:#x} last_syscall={}",
-                        self.0, riscv::register::sepc::read(), crate::syscall::LAST_SYSCALL.load(core::sync::atomic::Ordering::Relaxed));
+                    let ra: usize; unsafe { core::arch::asm!("mv {}, ra", out(reg) ra) };
+                    println!("[mm] get_mut bad pa={:#x} sepc={:#x} last_syscall={} ra={:#x}",
+                        self.0, riscv::register::sepc::read(), crate::syscall::LAST_SYSCALL.load(core::sync::atomic::Ordering::Relaxed), ra);
                     panic!("bad phys addr");
                 }
             }

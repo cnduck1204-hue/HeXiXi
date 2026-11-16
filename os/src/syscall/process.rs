@@ -131,7 +131,10 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
             let found_pid = child.getpid();
             let exit_code = child.inner_exclusive_access().exit_code;
             // Linux 的 wait status 编码：退出码放在高 8 位
-            *translated_refmut(inner.memory_set.token(), exit_code_ptr) = exit_code << 8;
+            // Linux 允许 wait(NULL)：状态指针为空时跳过写回
+            if !exit_code_ptr.is_null() {
+                *translated_refmut(inner.memory_set.token(), exit_code_ptr) = exit_code << 8;
+            }
             return found_pid as isize;
         }
         drop(inner);
