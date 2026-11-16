@@ -14,6 +14,8 @@ const SYSCALL_UTIMENSAT: usize = 88;
 const SYSCALL_IOCTL: usize = 29;
 const SYSCALL_SENDFILE: usize = 71;
 const SYSCALL_LSEEK: usize = 62;
+const SYSCALL_FUTEX: usize = 98;
+const SYSCALL_CLONE: usize = 220;
 const SYSCALL_READV: usize = 65;
 const SYSCALL_RENAMEAT2: usize = 276;
 const SYSCALL_PPOLL: usize = 73;
@@ -85,6 +87,8 @@ pub fn syscall(syscall_id: usize, args: [usize; 4]) -> isize {
         SYSCALL_STATFS | SYSCALL_FSTATFS => sys_statfs(args[1] as *mut u8),
         SYSCALL_IOCTL => sys_ioctl(),
         SYSCALL_LSEEK => sys_lseek(args[0], args[1] as isize),
+        SYSCALL_FUTEX => sys_futex(args[0], args[1], args[2]),
+        SYSCALL_CLONE => sys_clone_thread(args[0], args[1], args[2], args[3]),
         SYSCALL_READV => sys_readv(args[0], args[1] as *const u8, args[2]),
         SYSCALL_PPOLL => sys_ppoll(args[0] as *mut u8, args[1]),
         SYSCALL_SENDFILE => sys_sendfile(args[0], args[1], args[3]),

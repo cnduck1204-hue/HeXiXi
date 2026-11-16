@@ -83,3 +83,76 @@ pub fn sys_waittid(tid: usize) -> i32 {
         -2
     }
 }
+
+/// clone(220) 的线程语义：CLONE_VM|CLONE_THREAD 时创建同进程内的新线程。
+/// musl 的 __clone 在子线程里需要：sp = stack 参数、tp = tls 参数、a0 = 0。
+pub fn sys_clone_thread(flags: usize, stack: usize, _ptid: usize, tls: usize) -> isize {
+    const CLONE_VM: usize = 0x100;
+    if flags & CLONE_VM == 0 {
+        return super::process::sys_fork();
+    }
+    let task = current_task().unwrap();
+    let process = task.process.upgrade().unwrap();
+    let ustack_base = task
+        .inner_exclusive_access()
+        .res
+        .as_ref()
+        .unwrap()
+        .ustack_base;
+    // 复制父线程的用户上下文
+    let parent_cx = {
+        let mut parent_inner = task.inner_exclusive_access();
+        let cx = parent_inner.get_trap_cx();
+        *cx
+    };
+    let new_task = Arc::new(TaskControlBlock::new(Arc::clone(&process), ustack_base, true));
+    add_task(Arc::clone(&new_task));
+    let new_task_inner = new_task.inner_exclusive_access();
+    let new_task_res = new_task_inner.res.as_ref().unwrap();
+    let new_tid = new_task_res.tid;
+    {
+        let mut process_inner = process.inner_exclusive_access();
+        let tasks = &mut process_inner.tasks;
+        while tasks.len() < new_tid + 1 {
+            tasks.push(None);
+        }
+        tasks[new_tid] = Some(Arc::clone(&new_task));
+    }
+    let new_cx = new_task_inner.get_trap_cx();
+    *new_cx = parent_cx;
+    // 关键：内核栈必须是新线程自己的，否则切换过去会踩父线程的栈
+    new_cx.kernel_sp = new_task.kstack.get_top();
+    // 子线程从 ecall 之后继续，返回 0；栈/线程指针由调用者给出
+    new_cx.x[2] = stack;
+    new_cx.x[4] = tls;
+    new_cx.x[10] = 0;
+    new_tid as isize
+}
+
+/// futex(98)：用让出 CPU 的方式实现 WAIT，WAKE 直接返回
+pub fn sys_futex(uaddr: usize, op: usize, val: usize) -> isize {
+    const FUTEX_WAIT: usize = 0;
+    const FUTEX_WAKE: usize = 1;
+    let token = crate::mm::kernel_token() as usize;
+    let _ = token;
+    let token = crate::task::current_user_token();
+    match op & 0x7f {
+        FUTEX_WAIT => {
+            if uaddr == 0 {
+                return -22;
+            }
+            loop {
+                let cur = unsafe {
+                    let ptr = crate::mm::translated_ref(token, uaddr as *const u32);
+                    *ptr as usize
+                };
+                if cur != val {
+                    return 0;
+                }
+                crate::task::suspend_current_and_run_next();
+            }
+        }
+        FUTEX_WAKE => 1,
+        _ => 0,
+    }
+}
