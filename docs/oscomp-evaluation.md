@@ -28,9 +28,11 @@ ELF 和 `xxx_testcode.sh` 脚本。内核需要在启动后：
 | 项 | 状态 |
 |---|---|
 | `make all` 产出 `kernel-rv` | ✅ 根目录 Makefile 已实现 |
-| basic 组用例 | ✅ 本地 26/26 全通过（用 easy-fs 打包，脚本手动触发） |
+| basic 组用例 | ✅ 本地 26/26 全通过 |
+| 开机自动执行全部用例 | ✅ 磁盘存在 `run_tests` 标记时，内核用 `autorun` 作为 initproc |
+| 输出 `#### OS COMP TEST GROUP ####` 标记 | ✅ |
+| 跑完自动关机 | ✅（init 以 0 退出 → `exit_success`） |
 | 扫描官方 EXT4 测试盘 | ❌ 未实现 |
-| 自动执行脚本、输出标记、关机 | ❌ 未实现 |
 | 其余 11 组（busybox/lua/libc-test/…） | ❌ 未测 |
 
 ## 关键阻塞：EXT4

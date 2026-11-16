@@ -143,7 +143,13 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
 lazy_static! {
     pub static ref INITPROC: Arc<ProcessControlBlock> = {
-        let inode = open_file("initproc", OpenFlags::RDONLY).unwrap();
+        // 测试盘上有 run_tests 标记时，改为启动自动跑测的 autorun
+        let name = if open_file("run_tests", OpenFlags::RDONLY).is_some() {
+            "autorun"
+        } else {
+            "initproc"
+        };
+        let inode = open_file(name, OpenFlags::RDONLY).unwrap();
         let v = inode.read_all();
         ProcessControlBlock::new(v.as_slice())
     };
