@@ -65,6 +65,12 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_CONDVAR_CREATE => sys_condvar_create(args[0]),
         SYSCALL_CONDVAR_SIGNAL => sys_condvar_signal(args[0]),
         SYSCALL_CONDVAR_WAIT => sys_condvar_wait(args[0], args[1]),
-        _ => panic!("Unsupported syscall_id: {}", syscall_id),
+        _ => {
+            println!(
+                "[kernel] unsupported syscall {} (args [{:#x}, {:#x}, {:#x}]) -> ENOSYS",
+                syscall_id, args[0], args[1], args[2]
+            );
+            -38 // ENOSYS
+        }
     }
 }
