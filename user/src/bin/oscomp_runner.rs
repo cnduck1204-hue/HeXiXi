@@ -34,6 +34,20 @@ impl CStr {
     fn as_str(&self) -> &str {
         core::str::from_utf8(&self.0[..self.0.len() - 1]).unwrap_or("")
     }
+    fn ptr(&self) -> *const u8 {
+        self.0.as_ptr()
+    }
+}
+
+/// 只探测文件是否存在（避免把大文件读进 32KB 用户堆）
+fn exists(path: &str) -> bool {
+    let c = CStr::new(path);
+    let fd = open(c.as_str(), OpenFlags::RDONLY);
+    if fd < 0 {
+        return false;
+    }
+    close(fd as usize);
+    true
 }
 
 fn read_all(path: &str) -> Option<Vec<u8>> {
@@ -263,10 +277,43 @@ pub fn main(_argc: usize, _argv: &[&str]) -> i32 {
         "lua_testcode.sh",
         "busybox_testcode.sh",
         "libctest_testcode.sh",
+        "libcbench_testcode.sh",
+        "unixbench_testcode.sh",
+        "iozone_testcode.sh",
+        "iperf_testcode.sh",
+        "lmbench_testcode.sh",
+        "cyclictest_testcode.sh",
+        "ltp_testcode.sh",
+        "netperf_testcode.sh",
     ];
+
+    // 有 busybox 时，用真实的 sh 解释脚本（最贴近评测机行为）
+    if exists("busybox") {
+        for script in SCRIPTS.iter() {
+            if !exists(script) {
+                continue;
+            }
+            let pid = fork();
+            if pid == 0 {
+                let path = CStr::new("busybox");
+                let a0 = CStr::new("busybox");
+                let a1 = CStr::new("sh");
+                let a2 = CStr::new(script);
+                let argv: [*const u8; 4] = [a0.ptr(), a1.ptr(), a2.ptr(), core::ptr::null()];
+                exec(path.as_str(), &argv);
+                exit(-1);
+            } else if pid > 0 {
+                let mut code = 0;
+                waitpid(pid as usize, &mut code);
+            }
+        }
+        return 0;
+    }
+
+    // 没有 busybox 时退回内置迷你 shell
     let mut sh = Shell::new();
     for s in SCRIPTS {
-        if read_all(s).is_some() {
+        if exists(s) {
             sh.run_file(s);
         }
     }

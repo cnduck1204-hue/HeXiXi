@@ -119,6 +119,10 @@ impl File for OverlayFile {
 
 /// 读出整个文件（内核内部用，例如 exec 加载 ELF）
 pub fn read_file_all(name: &str) -> Option<Vec<u8>> {
+    read_file_all_inner(name)
+}
+
+fn read_file_all_inner(name: &str) -> Option<Vec<u8>> {
     if let Some(d) = overlay_get(name) {
         return Some(d.exclusive_access().clone());
     }
@@ -147,6 +151,23 @@ pub fn open_dyn(name: &str, flags: OpenFlags) -> Option<Arc<dyn File + Send + Sy
 }
 
 /// 根目录是否存在某文件
+/// 把相对路径解析成 EXT4/easy-fs 里的实际路径（拼上进程 cwd）
+pub fn resolve_path(name: &str) -> String {
+    let name = name.trim_start_matches("./");
+    if name.starts_with('/') {
+        return String::from(name.trim_start_matches('/'));
+    }
+    let cwd = crate::task::current_process().inner_exclusive_access().cwd.clone();
+    if cwd.is_empty() || cwd == "/" {
+        String::from(name)
+    } else {
+        let mut s = cwd;
+        s.push('/');
+        s.push_str(name);
+        s
+    }
+}
+
 pub fn exists(name: &str) -> bool {
     if overlay_get(name).is_some() {
         return true;

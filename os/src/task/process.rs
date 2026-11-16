@@ -294,6 +294,8 @@ impl ProcessControlBlock {
                 })
             },
         });
+        // 子进程继承父进程的工作目录
+        child.inner_exclusive_access().cwd = parent.cwd.clone();
         // add child
         parent.children.push(Arc::clone(&child));
         // create main thread of child process

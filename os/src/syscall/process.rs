@@ -43,7 +43,9 @@ pub fn sys_fork() -> isize {
 
 pub fn sys_exec(path: *const u8, mut args: *const usize) -> isize {
     let token = current_user_token();
-    let path = translated_str(token, path);
+    let raw_path = translated_str(token, path);
+    // exec 的路径同样要做归一化（busybox sh 传入的是 ./prog）
+    let path = crate::fs::resolve_path(&raw_path);
     let mut args_vec: Vec<String> = Vec::new();
     loop {
         let arg_str_ptr = *translated_ref(token, args);
@@ -57,6 +59,43 @@ pub fn sys_exec(path: *const u8, mut args: *const usize) -> isize {
     }
     if let Some(all_data) = crate::fs::read_file_all(path.as_str()) {
         let process = current_process();
+        // 支持 shebang：把脚本交给解释器运行（Linux 的 binfmt_script 行为）
+        if all_data.starts_with(b"#!") {
+            let end = all_data.iter().position(|&c| c == b'\n').unwrap_or(all_data.len());
+            let line = core::str::from_utf8(&all_data[2..end]).unwrap_or("").trim();
+            let mut it = line.split_whitespace();
+            if let Some(interp) = it.next() {
+                let interp_name = interp.trim_start_matches('/');
+                let basename = interp_name.rsplit('/').next().unwrap_or(interp_name);
+                let mut new_args: Vec<String> = Vec::new();
+                let interp_data = if let Some(d) = crate::fs::read_file_all(interp_name) {
+                    new_args.push(alloc::string::String::from(interp_name));
+                    if let Some(extra) = it.next() {
+                        new_args.push(alloc::string::String::from(extra));
+                    }
+                    Some(d)
+                } else if crate::fs::exists("busybox") {
+                    // 没有 /bin/sh 时退回 busybox
+                    new_args.push(alloc::string::String::from("busybox"));
+                    new_args.push(alloc::string::String::from(basename));
+                    if let Some(extra) = it.next() {
+                        new_args.push(alloc::string::String::from(extra));
+                    }
+                    crate::fs::read_file_all("busybox")
+                } else {
+                    None
+                };
+                if let Some(d) = interp_data {
+                    new_args.push(raw_path.clone());
+                    for a in args_vec.iter() {
+                        new_args.push(a.clone());
+                    }
+                    process.exec(d.as_slice(), new_args);
+                    return 0;
+                }
+            }
+            return -1;
+        }
         let argc = args_vec.len();
         process.exec(all_data.as_slice(), args_vec);
         // return argc because cx.x[10] will be covered with it later

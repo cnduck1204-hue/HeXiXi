@@ -140,7 +140,7 @@ pub fn sys_openat(_dirfd: isize, path: *const u8, flags: u32, _mode: u32) -> isi
     let token = current_user_token();
     // easy-fs 是扁平命名空间：去掉 "./" 与前导 "/"
     let path = translated_str(token, path);
-    let path = alloc::string::String::from(path.trim_start_matches("./").trim_start_matches('/'));
+    let path = crate::fs::resolve_path(&path);
     let mut of = OpenFlags::RDONLY;
     match flags & 0b11 {
         1 => of = OpenFlags::WRONLY,
@@ -310,7 +310,7 @@ fn write_stat(token: usize, st: *mut u8, size: usize, mode: u32) {
 pub fn sys_newfstatat(path: *const u8, st: *mut u8) -> isize {
     let token = current_user_token();
     let p = translated_str(token, path);
-    let p = alloc::string::String::from(p.trim_start_matches("./").trim_start_matches('/'));
+    let p = crate::fs::resolve_path(&p);
     let p = if p.is_empty() || p == "." { alloc::string::String::from("mnt") } else { p };
     match crate::fs::read_file_all(p.as_str()) {
         Some(data) => {
@@ -318,5 +318,41 @@ pub fn sys_newfstatat(path: *const u8, st: *mut u8) -> isize {
             0
         }
         None => -2,
+    }
+}
+
+/// fcntl(25)：busybox sh 用 F_DUPFD 复制脚本 fd，必须返回真实的 fd
+pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> isize {
+    const F_DUPFD: usize = 0;
+    const F_GETFD: usize = 1;
+    const F_SETFD: usize = 2;
+    const F_DUPFD_CLOEXEC: usize = 1030;
+    let process = current_process();
+    let mut inner = process.inner_exclusive_access();
+    match cmd {
+        F_DUPFD | F_DUPFD_CLOEXEC => {
+            if fd >= inner.fd_table.len() {
+                return -1;
+            }
+            let file = match &inner.fd_table[fd] {
+                Some(f) => f.clone(),
+                None => return -1,
+            };
+            let mut new_fd = arg;
+            while inner.fd_table.len() <= new_fd {
+                inner.fd_table.push(None);
+            }
+            while inner.fd_table[new_fd].is_some() {
+                new_fd += 1;
+                if inner.fd_table.len() <= new_fd {
+                    inner.fd_table.push(None);
+                }
+            }
+            inner.fd_table[new_fd] = Some(file);
+            new_fd as isize
+        }
+        F_GETFD => 0,
+        F_SETFD => 0,
+        _ => 0,
     }
 }
