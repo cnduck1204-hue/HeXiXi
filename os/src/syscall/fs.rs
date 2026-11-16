@@ -356,3 +356,19 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> isize {
         _ => 0,
     }
 }
+
+/// ppoll(73)：内核没有真正的 poll，这里把所有 fd 都标记为可读
+pub fn sys_ppoll(fds: *mut u8, nfds: usize) -> isize {
+    let token = current_user_token();
+    for i in 0..nfds {
+        let base = fds as usize + i * 8;
+        let events = *translated_ref(token, (base + 4) as *const u16);
+        *translated_refmut(token, (base + 6) as *mut u16) = events | 0x1; // POLLIN
+    }
+    nfds as isize
+}
+
+/// sendfile(71)：暂不支持，返回 ENOSYS（busybox 会自动回退到 read/write）
+pub fn sys_sendfile(_in_fd: usize, _out_fd: usize, _count: usize) -> isize {
+    -38
+}

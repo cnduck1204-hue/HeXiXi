@@ -294,8 +294,14 @@ impl ProcessControlBlock {
                 })
             },
         });
-        // 子进程继承父进程的工作目录
-        child.inner_exclusive_access().cwd = parent.cwd.clone();
+        // 子进程继承父进程的工作目录与堆/mmap 指针
+        {
+            let mut ci = child.inner_exclusive_access();
+            ci.cwd = parent.cwd.clone();
+            ci.brk_base = parent.brk_base;
+            ci.brk = parent.brk;
+            ci.mmap_top = parent.mmap_top;
+        }
         // add child
         parent.children.push(Arc::clone(&child));
         // create main thread of child process
