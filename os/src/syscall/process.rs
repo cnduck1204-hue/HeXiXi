@@ -265,3 +265,29 @@ pub fn sys_mmap(len: usize) -> isize {
 pub fn sys_munmap() -> isize {
     0
 }
+
+
+/// sched_getparam(123)：写一个 4 字节的 sched_priority
+pub fn sys_sched_getparam(param: *mut u8) -> isize {
+    if param.is_null() {
+        return -22;
+    }
+    let token = crate::task::current_user_token();
+    for i in 0..4 {
+        *crate::mm::translated_refmut(token, (param as usize + i) as *mut u8) = 0;
+    }
+    0
+}
+
+/// sched_getaffinity(122)：只报告 CPU0
+pub fn sys_sched_getaffinity(size: usize, mask: *mut u8) -> isize {
+    if mask.is_null() {
+        return -22;
+    }
+    let token = crate::task::current_user_token();
+    for i in 0..size {
+        let val: u8 = if i == 0 { 1 } else { 0 };
+        *crate::mm::translated_refmut(token, (mask as usize + i) as *mut u8) = val;
+    }
+    size as isize
+}
