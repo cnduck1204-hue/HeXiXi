@@ -14,8 +14,12 @@ pub trait File: Send + Sync {
     fn size(&self) -> usize {
         0
     }
-    /// 调整读写偏移，返回新偏移
+    /// 调整读写偏移（相对当前），返回新偏移
     fn seek(&self, _offset: isize) -> isize {
+        -1
+    }
+    /// 绝对定位（SEEK_SET / SEEK_END），返回新偏移
+    fn seek_to(&self, _pos: isize) -> isize {
         -1
     }
 }
@@ -102,6 +106,15 @@ impl File for OverlayFile {
     }
     fn size(&self) -> usize {
         self.data.exclusive_access().len()
+    }
+    fn seek_to(&self, pos: isize) -> isize {
+        if pos < 0 {
+            return -1;
+        }
+        let len = self.data.exclusive_access().len() as isize;
+        let new = if pos > len { len } else { pos };
+        *self.offset.exclusive_access() = new as usize;
+        new
     }
     fn seek(&self, offset: isize) -> isize {
         let len = self.data.exclusive_access().len() as isize;

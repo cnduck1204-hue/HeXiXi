@@ -306,6 +306,15 @@ impl File for Ext4File {
     fn size(&self) -> usize {
         self.inode.size as usize
     }
+    fn seek_to(&self, pos: isize) -> isize {
+        if pos < 0 {
+            return -1;
+        }
+        let len = self.inode.size as isize;
+        let new = if pos > len { len } else { pos };
+        *self.offset.exclusive_access() = new as usize;
+        new
+    }
     fn seek(&self, offset: isize) -> isize {
         let len = self.inode.size as isize;
         let mut off = self.offset.exclusive_access();

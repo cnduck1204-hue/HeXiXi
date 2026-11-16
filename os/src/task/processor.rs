@@ -95,7 +95,8 @@ pub fn current_trap_cx_user_va() -> usize {
 }
 
 pub fn current_kstack_top() -> usize {
-    current_task().unwrap().kstack.get_top()
+    // panic 处理器会调用这里；没有当前任务时返回 0，避免二次 panic
+    current_task().map(|t| t.kstack.get_top()).unwrap_or(0)
 }
 
 pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {

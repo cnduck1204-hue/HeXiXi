@@ -441,16 +441,22 @@ pub fn sys_statfs(buf: *mut u8) -> isize {
     0
 }
 
-/// lseek(62)
-pub fn sys_lseek(fd: usize, offset: isize) -> isize {
+/// lseek(62)：支持 SEEK_SET(0) / SEEK_CUR(1) / SEEK_END(2)
+pub fn sys_lseek(fd: usize, offset: isize, whence: usize) -> isize {
     let process = current_process();
     let inner = process.inner_exclusive_access();
     if fd >= inner.fd_table.len() {
         return -1;
     }
-    match &inner.fd_table[fd] {
-        Some(f) => f.seek(offset),
-        None => -1,
+    let file = match &inner.fd_table[fd] {
+        Some(f) => f.clone(),
+        None => return -1,
+    };
+    drop(inner);
+    match whence {
+        0 => file.seek_to(offset),
+        2 => file.seek_to(file.size() as isize + offset),
+        _ => file.seek(offset),
     }
 }
 

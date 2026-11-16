@@ -91,7 +91,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 5]) -> isize {
         SYSCALL_RENAMEAT2 => sys_renameat(args[1] as *const u8, args[3] as *const u8),
         SYSCALL_STATFS | SYSCALL_FSTATFS => sys_statfs(args[1] as *mut u8),
         SYSCALL_IOCTL => sys_ioctl(),
-        SYSCALL_LSEEK => sys_lseek(args[0], args[1] as isize),
+        SYSCALL_LSEEK => sys_lseek(args[0], args[1] as isize, args[2]),
         SYSCALL_FUTEX => sys_futex(args[0], args[1], args[2]),
         SYSCALL_CLONE => sys_clone_thread(args[0], args[1], args[2], args[3], args[4]),
         SYSCALL_READV => sys_readv(args[0], args[1] as *const u8, args[2]),
