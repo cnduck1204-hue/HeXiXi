@@ -1,0 +1,24 @@
+{
+  "copied_on": "2026-11-16",
+  "source": {
+    "repository": "https://github.com/oscomp/testsuits-for-oskernel.git",
+    "commit": "8b58dd16d26d30f7c74d48d5832d870d3051b703",
+    "local_origin": "<workspace>/testsuits-for-oskernel",
+    "destination": "src",
+    "file_count": 14473,
+    "verification": "All copied files matched the local source by SHA-256"
+  },
+  "image_origin": "<workspace>/images",
+  "images": [
+    {
+      "file": "img/sdcard-rv.img",
+      "size_bytes": 4294967296,
+      "sha256": "95973543db6b84a9a5e70f30da466ce292867aff5b689fb14c88dc9406e378b8"
+    },
+    {
+      "file": "img/sdcard-rv.img.xz",
+      "size_bytes": 284247048,
+      "sha256": "2b59aee4d26681b2d78a8faa615ac216f723a8ea157544e7867bbc8c77aac087"
+    }
+  ]
+}

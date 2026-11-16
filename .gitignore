@@ -1,0 +1,12 @@
+**/target/
+**/__pycache__/
+/os/src/link_app.S
+/os/src/linker.ld
+/os/last-*
+/os/.gdb_history
+/os/virt.out
+.DS_Store
+/.logs/
+/tests/official/img/*.img
+/tests/official/img/*.img.xz
+/hexixi-dev-amd64.tar
