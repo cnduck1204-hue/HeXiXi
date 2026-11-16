@@ -79,8 +79,9 @@ pub fn sys_pipe(pipe: *mut usize) -> isize {
     inner.fd_table[read_fd] = Some(pipe_read);
     let write_fd = inner.alloc_fd();
     inner.fd_table[write_fd] = Some(pipe_write);
-    *translated_refmut(token, pipe) = read_fd;
-    *translated_refmut(token, unsafe { pipe.add(1) }) = write_fd;
+    // Linux 的 pipe(int fd[2]) 是 4 字节 int，按 4 字节写入
+    *translated_refmut(token, pipe as *mut i32) = read_fd as i32;
+    *translated_refmut(token, (pipe as usize + 4) as *mut i32) = write_fd as i32;
     0
 }
 

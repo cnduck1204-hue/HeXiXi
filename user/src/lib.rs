@@ -77,7 +77,7 @@ pub fn open(path: &str, flags: OpenFlags) -> isize {
 pub fn close(fd: usize) -> isize {
     sys_close(fd)
 }
-pub fn pipe(pipe_fd: &mut [usize]) -> isize {
+pub fn pipe(pipe_fd: &mut [i32]) -> isize {
     sys_pipe(pipe_fd)
 }
 pub fn read(fd: usize, buf: &mut [u8]) -> isize {
@@ -109,31 +109,45 @@ pub fn exec(path: &str, args: &[*const u8]) -> isize {
     sys_exec(path, args)
 }
 pub fn wait(exit_code: &mut i32) -> isize {
+    let mut raw: i32 = 0;
     loop {
-        match sys_waitpid(-1, exit_code as *mut _) {
+        match sys_waitpid(-1, &mut raw as *mut i32) {
             -2 => {
                 yield_();
             }
             // -1 or a real pid
-            exit_pid => return exit_pid,
+            exit_pid => {
+                // 内核返回 Linux 风格的 wait status，这里还原成原始退出码
+                *exit_code = raw >> 8;
+                return exit_pid;
+            }
         }
     }
 }
 
 pub fn waitpid(pid: usize, exit_code: &mut i32) -> isize {
+    let mut raw: i32 = 0;
     loop {
-        match sys_waitpid(pid as isize, exit_code as *mut _) {
+        match sys_waitpid(pid as isize, &mut raw as *mut i32) {
             -2 => {
                 yield_();
             }
             // -1 or a real pid
-            exit_pid => return exit_pid,
+            exit_pid => {
+                *exit_code = raw >> 8;
+                return exit_pid;
+            }
         }
     }
 }
 
 pub fn waitpid_nb(pid: usize, exit_code: &mut i32) -> isize {
-    sys_waitpid(pid as isize, exit_code as *mut _)
+    let mut raw: i32 = 0;
+    let ret = sys_waitpid(pid as isize, &mut raw as *mut i32);
+    if ret > 0 {
+        *exit_code = raw >> 8;
+    }
+    ret
 }
 
 bitflags! {

@@ -71,10 +71,6 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // however, if this is the main thread of current process
     // the process should terminate at once
     if tid == 0 {
-        // 进程退出时关闭所有文件描述符：
-        // 否则僵尸 PCB 会一直持有 Arc<Pipe>，管道的写端永远不会关闭，
-        // 读端在数据读空后会永久阻塞。
-        process.inner_exclusive_access().fd_table.clear();
         let pid = process.getpid();
         #[cfg(feature = "board_qemu")]
         if pid == IDLE_PID {
