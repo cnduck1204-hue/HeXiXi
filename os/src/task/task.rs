@@ -35,6 +35,9 @@ pub struct TaskControlBlockInner {
 
 impl TaskControlBlockInner {
     pub fn get_trap_cx(&self) -> &'static mut TrapContext {
+        if self.trap_cx_ppn.0 == 0 {
+            println!("[tcb] get_trap_cx with ppn=0!");
+        }
         self.trap_cx_ppn.get_mut()
     }
 

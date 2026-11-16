@@ -164,7 +164,16 @@ impl PhysAddr {
         unsafe { (self.0 as *const T).as_ref().unwrap() }
     }
     pub fn get_mut<T>(&self) -> &'static mut T {
-        unsafe { (self.0 as *mut T).as_mut().unwrap() }
+        unsafe {
+            match (self.0 as *mut T).as_mut() {
+                Some(v) => v,
+                None => {
+                    println!("[mm] get_mut on bad phys addr {:#x}, kernel sepc={:#x}",
+                        self.0, riscv::register::sepc::read());
+                    panic!("bad phys addr");
+                }
+            }
+        }
     }
 }
 impl PhysPageNum {
