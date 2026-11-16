@@ -69,7 +69,8 @@ pub fn trap_handler() -> ! {
             );
             */
             println!(
-                "[fault] {:?} sepc={:#x} stval={:#x}",
+                "[fault] pid={} {:?} sepc={:#x} stval={:#x}",
+                crate::task::current_process().getpid(),
                 scause.cause(),
                 current_trap_cx().sepc,
                 stval
