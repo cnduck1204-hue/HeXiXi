@@ -1,5 +1,5 @@
 use crate::fs::{make_pipe, open_file, OpenFlags};
-use crate::mm::{translated_byte_buffer, translated_refmut, translated_str, UserBuffer};
+use crate::mm::{translated_byte_buffer, translated_ref, translated_refmut, translated_str, UserBuffer};
 use crate::task::{current_process, current_user_token};
 use alloc::sync::Arc;
 
@@ -96,4 +96,39 @@ pub fn sys_dup(fd: usize) -> isize {
     let new_fd = inner.alloc_fd();
     inner.fd_table[new_fd] = Some(Arc::clone(inner.fd_table[fd].as_ref().unwrap()));
     new_fd as isize
+}
+
+/// writev(2)：把多个 iovec 拼成一个 UserBuffer 后写出
+pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> isize {
+    let token = current_user_token();
+    let process = current_process();
+    let inner = process.inner_exclusive_access();
+    if fd >= inner.fd_table.len() {
+        return -1;
+    }
+    if let Some(file) = &inner.fd_table[fd] {
+        if !file.writable() {
+            return -1;
+        }
+        let file = file.clone();
+        drop(inner);
+        let mut buffers = alloc::vec::Vec::new();
+        for i in 0..iovcnt {
+            let entry = (iov as usize + i * 16) as *const usize;
+            let base = *translated_ref(token, entry);
+            let len = *translated_ref(token, (entry as usize + 8) as *const usize);
+            if len == 0 {
+                continue;
+            }
+            buffers.append(&mut translated_byte_buffer(token, base as *const u8, len));
+        }
+        file.write(UserBuffer::new(buffers)) as isize
+    } else {
+        -1
+    }
+}
+
+/// ioctl(2)：只支持 isatty 探测，其余返回 ENOTTY
+pub fn sys_ioctl() -> isize {
+    -25 // ENOTTY
 }

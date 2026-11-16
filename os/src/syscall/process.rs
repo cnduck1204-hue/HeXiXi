@@ -115,3 +115,12 @@ pub fn sys_kill(pid: usize, signal: u32) -> isize {
         -1
     }
 }
+
+pub fn sys_exit_group(exit_code: i32) -> ! {
+    sys_exit(exit_code)
+}
+
+/// 单线程进程，tid 用 pid 代替
+pub fn sys_set_tid_address(_tidptr: usize) -> isize {
+    current_process().getpid() as isize
+}

@@ -74,8 +74,15 @@ impl MemorySet {
     fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
         map_area.map(&mut self.page_table);
         if let Some(data) = data {
-            map_area.copy_data(&mut self.page_table, data);
+            map_area.copy_data(&mut self.page_table, data, 0);
         }
+        self.areas.push(map_area);
+    }
+
+    /// 与 push 相同，但允许数据从段内偏移处开始（ELF 的 p_vaddr % PAGE_SIZE）
+    fn push_at(&mut self, mut map_area: MapArea, data: &[u8], offset: usize) {
+        map_area.map(&mut self.page_table);
+        map_area.copy_data(&mut self.page_table, data, offset);
         self.areas.push(map_area);
     }
     /// Mention that trampoline is not collected by areas.
@@ -194,9 +201,11 @@ impl MemorySet {
                 }
                 let map_area = MapArea::new(start_va, end_va, MapType::Framed, map_perm);
                 max_end_vpn = map_area.vpn_range.get_end();
-                memory_set.push(
+                let seg_off = (ph.virtual_addr() as usize) % PAGE_SIZE;
+                memory_set.push_at(
                     map_area,
-                    Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
+                    &elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize],
+                    seg_off,
                 );
             }
         }
@@ -308,24 +317,24 @@ impl MapArea {
     }
     /// data: start-aligned but maybe with shorter length
     /// assume that all frames were cleared before
-    pub fn copy_data(&mut self, page_table: &mut PageTable, data: &[u8]) {
+    pub fn copy_data(&mut self, page_table: &mut PageTable, data: &[u8], offset: usize) {
         assert_eq!(self.map_type, MapType::Framed);
-        let mut start: usize = 0;
+        let mut written = 0usize;
         let mut current_vpn = self.vpn_range.get_start();
-        let len = data.len();
-        loop {
-            let src = &data[start..len.min(start + PAGE_SIZE)];
+        let mut page_off = offset % PAGE_SIZE;
+        while written < data.len() {
+            let n = (PAGE_SIZE - page_off).min(data.len() - written);
             let dst = &mut page_table
                 .translate(current_vpn)
                 .unwrap()
                 .ppn()
-                .get_bytes_array()[..src.len()];
-            dst.copy_from_slice(src);
-            start += PAGE_SIZE;
-            if start >= len {
-                break;
+                .get_bytes_array()[page_off..page_off + n];
+            dst.copy_from_slice(&data[written..written + n]);
+            written += n;
+            page_off = 0;
+            if written < data.len() {
+                current_vpn.step();
             }
-            current_vpn.step();
         }
     }
 }
