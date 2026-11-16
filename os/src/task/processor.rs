@@ -51,7 +51,10 @@ pub fn run_tasks() {
                 __switch(idle_task_cx_ptr, next_task_cx_ptr);
             }
         } else {
-            println!("no tasks available in run_tasks");
+            // 内核态中断被屏蔽，不能依赖时钟中断唤醒休眠任务，
+            // 空闲时主动轮询定时器，否则所有任务都阻塞时系统死锁。
+            crate::timer::check_timer();
+            core::hint::spin_loop();
         }
     }
 }

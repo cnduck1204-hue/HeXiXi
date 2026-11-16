@@ -91,6 +91,9 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
             return found_pid as isize;
         }
         drop(inner);
+        // 父进程在内核里忙等，时钟中断不会到来，
+        // 必须主动轮询定时器，否则子进程的 sleep 永远醒不了。
+        crate::timer::check_timer();
         suspend_current_and_run_next();
     }
 }
