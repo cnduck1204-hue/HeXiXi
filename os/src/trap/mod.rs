@@ -133,7 +133,12 @@ pub fn trap_return() -> ! {
 #[no_mangle]
 pub fn trap_from_kernel() -> ! {
     use riscv::register::sepc;
-    println!("stval = {:#x}, sepc = {:#x}", stval::read(), sepc::read());
+    let pid = crate::task::current_task()
+        .map(|t| t.process.upgrade().map(|p| p.getpid()).unwrap_or(0))
+        .unwrap_or(0);
+    println!("[kfault] pid={} stval={:#x} sepc={:#x} last_syscall={}",
+        pid, stval::read(), sepc::read(),
+        crate::syscall::LAST_SYSCALL.load(core::sync::atomic::Ordering::Relaxed));
     panic!("a trap {:?} from kernel!", scause::read().cause());
 }
 

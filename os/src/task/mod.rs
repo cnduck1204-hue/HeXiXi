@@ -213,6 +213,8 @@ pub fn drain_recycled_tasks() {
         }
         core::mem::take(&mut *q)
     };
+    // 暂不析构：析构会释放内核栈，实测在大量线程场景下引发内核态缺页。
+    // 待找到安全回收点后再切换回 drop(tasks)。
     for t in tasks {
         core::mem::forget(t);
     }
