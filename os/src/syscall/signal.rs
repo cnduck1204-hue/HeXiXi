@@ -7,10 +7,12 @@ use crate::mm::{translated_ref, translated_refmut};
 pub const SIGSTUB_VA: usize = 0x00FF_E000;
 /// 保存被打断的 trap context 的页
 pub const SIGCTX_VA: usize = 0x00FF_F000;
-/// 信号编号：SIGALRM
+/// 信号编号：SIGALRM（定时器）
 pub const SIGALRM: usize = 14;
-/// 信号编号：SIGCHLD
+/// 信号编号：SIGCHLD（子进程退出）
 pub const SIGCHLD: usize = 17;
+/// 信号编号：SIGSEGV（非法访问）
+pub const SIGSEGV: usize = 11;
 
 /// 在用户地址空间建立信号所需的两页（exec 时调用）
 pub fn setup_signal_pages(memory_set: &mut MemorySet) {
@@ -51,20 +53,16 @@ pub fn sys_setitimer(which: usize, new: *const u8, _old: *mut u8) -> isize {
     0
 }
 
-/// rt_sigaction(134)：记录 SIGALRM / SIGCHLD 的 handler
+/// rt_sigaction(134)：记录任意信号号的用户 handler（0=SIG_DFL, 1=SIG_IGN）。
+/// 我们不做信号屏蔽/flag 语义，只保存 handler 地址并在投递时调用。
 pub fn sys_rt_sigaction(signo: usize, act: *const u8, _old: *mut u8) -> isize {
-    if act.is_null() {
+    if act.is_null() || signo >= 32 {
         return 0;
     }
     let token = current_user_token();
-    // struct sigaction 第一个字段就是 handler 地址（0=SIG_DFL, 1=SIG_IGN）
+    // struct sigaction 第一个字段就是 handler 地址
     let handler = *translated_ref(token, act as *const usize);
-    let process = current_process();
-    match signo {
-        SIGALRM => process.inner_exclusive_access().sigalrm_handler = handler,
-        SIGCHLD => process.inner_exclusive_access().sigchld_handler = handler,
-        _ => {}
-    }
+    current_process().inner_exclusive_access().signal_handlers[signo] = handler;
     0
 }
 
@@ -88,53 +86,46 @@ pub fn check_alarm() {
     let mut inner = process.inner_exclusive_access();
     if inner.alarm_deadline != 0 && crate::timer::get_time_ms() >= inner.alarm_deadline {
         inner.alarm_deadline = 0;
-        inner.sigalrm_pending = true;
+        inner.signal_pending |= 1u32 << SIGALRM;
     }
 }
 
 /// 内核忙等循环（waitpid / futex …）里调用：SIGALRM 已到期则返回 true。
 /// 调用者应立刻返回 -EINTR，这样回到用户态后 deliver_signal 才能执行超时 handler。
-/// （LTP 的超时杀子进程、busybox timeout 都依赖这个）
 pub fn alarm_interrupts() -> bool {
     check_alarm();
-    current_process().inner_exclusive_access().sigalrm_pending
+    current_process().inner_exclusive_access().signal_pending & (1u32 << SIGALRM) != 0
 }
 
-/// 返回用户态前调用：把待投递的 SIGALRM / SIGCHLD 变成“跳到用户 handler”。
-/// 一次只投递一个（不嵌套）；handler 里的 rt_sigreturn 会把现场恢复，
-/// 之后的下一次 trap 再投剩下的 pending。
+/// 返回用户态前调用：把待投递、且注册了用户 handler 的信号变成“跳到 handler”。
+/// 一次只投一个（不嵌套）；handler 里的 rt_sigreturn 恢复现场后，下一次 trap 再投剩下的。
 pub fn deliver_signal() {
     let process = current_process();
-    let (alarm_handler, alarm_pending, chld_handler, chld_pending, in_handler) = {
+    let (pending, handlers, in_handler) = {
         let inner = process.inner_exclusive_access();
-        (
-            inner.sigalrm_handler,
-            inner.sigalrm_pending,
-            inner.sigchld_handler,
-            inner.sigchld_pending,
-            inner.in_sigalrm,
-        )
+        (inner.signal_pending, inner.signal_handlers, inner.in_sigalrm)
     };
-    // 正在 handler 里：不嵌套，等 rt_sigreturn 之后再投
-    if in_handler {
+    if in_handler || pending == 0 {
         return;
     }
-    // 选一个可投递的信号
-    let (handler, signo, is_alarm) = if alarm_pending && alarm_handler > 1 {
-        (alarm_handler, SIGALRM, true)
-    } else if chld_pending && chld_handler > 1 {
-        (chld_handler, SIGCHLD, false)
-    } else {
-        // 没有可调用的 handler（SIG_DFL / SIG_IGN / 未注册）：直接清 pending
-        let mut inner = process.inner_exclusive_access();
-        if alarm_pending {
-            inner.sigalrm_pending = false;
+    // 选一个“有用户 handler”的最低 pending 信号；没有 handler 的直接清掉
+    let mut mask = pending;
+    let mut deliver: Option<usize> = None;
+    while mask != 0 {
+        let signo = mask.trailing_zeros() as usize;
+        mask &= mask - 1;
+        if handlers[signo] > 1 {
+            deliver = Some(signo);
+            break;
+        } else {
+            process.inner_exclusive_access().signal_pending &= !(1u32 << signo);
         }
-        if chld_pending {
-            inner.sigchld_pending = false;
-        }
-        return;
+    }
+    let signo = match deliver {
+        Some(s) => s,
+        None => return,
     };
+    let handler = handlers[signo];
     let token = current_user_token();
     let cx = crate::task::current_trap_cx();
     // 保存当前上下文
@@ -151,10 +142,6 @@ pub fn deliver_signal() {
     cx.x[10] = signo;
     cx.x[2] = cx.x[2].saturating_sub(512) & !0xf;
     let mut inner = process.inner_exclusive_access();
-    if is_alarm {
-        inner.sigalrm_pending = false;
-    } else {
-        inner.sigchld_pending = false;
-    }
+    inner.signal_pending &= !(1u32 << signo);
     inner.in_sigalrm = true;
 }

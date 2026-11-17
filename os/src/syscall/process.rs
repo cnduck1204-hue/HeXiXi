@@ -208,11 +208,21 @@ pub fn sys_kill(pid: usize, signal: u32) -> isize {
     };
     if pid == 0 {
         // kill(0) 语义上是发给自己所在进程组（这里就是自己）
-        current_process().inner_exclusive_access().signals |= flag;
+        let this = current_process();
+        let mut inner = this.inner_exclusive_access();
+        inner.signals |= flag;
+        if signal != 2 && signal != 9 && signal != 15 {
+            inner.signal_pending |= 1u32 << signal;
+        }
         return 0;
     }
     if let Some(process) = pid2process(pid) {
-        process.inner_exclusive_access().signals |= flag;
+        let mut inner = process.inner_exclusive_access();
+        inner.signals |= flag;
+        // SIGKILL/SIGTERM/SIGINT 走 check_error 直接杀进程；其它信号置 pending 交给 handler
+        if signal != 2 && signal != 9 && signal != 15 {
+            inner.signal_pending |= 1u32 << signal;
+        }
     }
     // 目标不存在：按成功返回（测试脚本常见“kill 一个已退出的后台进程”）
     0
@@ -231,7 +241,12 @@ pub fn sys_thread_kill(signal: u32) -> isize {
         Some(f) => f,
         None => return -22,
     };
-    current_process().inner_exclusive_access().signals |= flag;
+    let this = current_process();
+    let mut inner = this.inner_exclusive_access();
+    inner.signals |= flag;
+    if signal != 2 && signal != 9 && signal != 15 {
+        inner.signal_pending |= 1u32 << signal;
+    }
     0
 }
 
@@ -287,18 +302,17 @@ pub fn sys_brk(addr: usize) -> isize {
 }
 
 /// mmap(222)：只支持匿名映射，从固定的 mmap 区向上分配（惰性：缺页时才分配物理帧）
-pub fn sys_mmap(len: usize) -> isize {
+/// prot: PROT_READ=1, PROT_WRITE=2, PROT_EXEC=4（mmap 第 3 个参数）。
+/// lat_sig 的 prot 用例依赖 PROT_READ 映射 + 写触发 SIGSEGV，所以这里必须尊重 prot。
+pub fn sys_mmap(len: usize, prot: usize) -> isize {
     let process = current_process();
     let mut inner = process.inner_exclusive_access();
     let size = (len + crate::config::PAGE_SIZE - 1) / crate::config::PAGE_SIZE * crate::config::PAGE_SIZE;
     let start = inner.mmap_top;
     let end = start + size;
+    let perm = prot_to_perm(prot);
     // 惰性映射：pthread 每个线程栈 128KB，按需分配才能让 2500 线程的用例跑得下去
-    inner.memory_set.insert_lazy_area(
-        start.into(),
-        end.into(),
-        crate::mm::MapPermission::U | crate::mm::MapPermission::R | crate::mm::MapPermission::W,
-    );
+    inner.memory_set.insert_lazy_area(start.into(), end.into(), perm);
     inner.mmap_top = end;
     start as isize
 }
@@ -558,6 +572,36 @@ fn write_rlimit(token: usize, ptr: *mut u8, cur: usize, max: usize) {
 fn apply_nofile(cur: usize) {
     let v = cur.clamp(16, 65536);
     current_process().inner_exclusive_access().nofile_limit = v;
+}
+
+/// 把 Linux 的 prot 位翻译成 MapPermission
+fn prot_to_perm(prot: usize) -> crate::mm::MapPermission {
+    let mut perm = crate::mm::MapPermission::U;
+    if prot & 1 != 0 {
+        perm |= crate::mm::MapPermission::R;
+    }
+    if prot & 2 != 0 {
+        perm |= crate::mm::MapPermission::W;
+    }
+    if prot & 4 != 0 {
+        perm |= crate::mm::MapPermission::X;
+    }
+    perm
+}
+
+/// mprotect(226)：真正改权限。
+/// 之前它是空实现，而 rt-tests/cyclictest 先 mmap(PROT_NONE) 再 mprotect(RW) 当线程栈用；
+/// mmap 开始尊重 prot 后，不实现 mprotect 就会写 PROT_NONE 页 → SIGSEGV，cyclictest 4 个用例全 fail。
+pub fn sys_mprotect(addr: usize, len: usize, prot: usize) -> isize {
+    if len == 0 {
+        return 0;
+    }
+    let start = crate::mm::VirtAddr::from(addr).floor();
+    let end = crate::mm::VirtAddr::from(addr + len).ceil();
+    let process = current_process();
+    let mut inner = process.inner_exclusive_access();
+    inner.memory_set.mprotect(start, end, prot_to_perm(prot));
+    0
 }
 
 /// getrlimit(163)

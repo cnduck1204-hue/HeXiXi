@@ -121,6 +121,16 @@ impl PageTable {
         assert!(pte.is_valid(), "vpn {:?} is invalid before unmapping", vpn);
         *pte = PageTableEntry::empty();
     }
+    /// 改一个已映射页的权限位（mprotect 用，保留原 ppn）
+    pub fn set_flags(&mut self, vpn: VirtPageNum, flags: PTEFlags) {
+        if let Some(pte) = self.find_pte(vpn) {
+            if pte.is_valid() {
+                let ppn = pte.ppn();
+                *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
+            }
+        }
+    }
+
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
         self.find_pte(vpn).map(|pte| *pte)
     }

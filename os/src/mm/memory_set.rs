@@ -78,6 +78,18 @@ impl MemorySet {
             let end = area.vpn_range.get_end();
             if start <= vpn && vpn < end {
                 if area.lazy {
+                    // 已经建过映射的页不能再 map 一次（会触发 PageTable::map 的
+                    // "vpn is mapped before mapping" panic）。典型场景：PROT_READ 的 mmap 页
+                    // 第一次写缺页补了 R 映射，第二次写还是缺页 —— 这时应该交给上层
+                    // 按非法访问处理（用户注册了 SIGSEGV handler 就投递 handler）。
+                    let mapped = self
+                        .page_table
+                        .translate(vpn)
+                        .map(|pte| pte.is_valid())
+                        .unwrap_or(false);
+                    if mapped {
+                        return false;
+                    }
                     area.map_one(&mut self.page_table, vpn);
                     return true;
                 }
@@ -86,6 +98,26 @@ impl MemorySet {
         }
         false
     }
+    /// mprotect(addr, len, prot)：更新与 [start_vpn, end_vpn) 相交区域的权限。
+    /// 我们的 brk/mmap 是惰性映射，所以既要改“以后缺页补页用的权限”，
+    /// 也要改“已经映射过的页”的 PTE flags（否则第二次写还是缺页）。
+    pub fn mprotect(&mut self, start_vpn: VirtPageNum, end_vpn: VirtPageNum, perm: MapPermission) {
+        for area in self.areas.iter_mut() {
+            if area.vpn_range.get_start() < end_vpn && start_vpn < area.vpn_range.get_end() {
+                area.map_perm = perm;
+                let flags = PTEFlags::from_bits(perm.bits).unwrap();
+                let mapped: alloc::vec::Vec<VirtPageNum> =
+                    area.data_frames.keys().copied().collect();
+                for vpn in mapped {
+                    self.page_table.set_flags(vpn, flags);
+                }
+            }
+        }
+        unsafe {
+            asm!("sfence.vma");
+        }
+    }
+
     /// 映射一个页并写入数据（用于信号 stub 等内核注入的用户页）
     pub fn insert_data_page(
         &mut self,

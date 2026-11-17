@@ -47,14 +47,10 @@ pub struct ProcessControlBlockInner {
     pub dir_offsets: alloc::collections::BTreeMap<usize, usize>,
     /// SIGALRM 到期时间（ms，0 表示未设置）
     pub alarm_deadline: usize,
-    /// SIGALRM handler 地址（0 表示未注册）
-    pub sigalrm_handler: usize,
-    /// SIGALRM 待投递
-    pub sigalrm_pending: bool,
-    /// SIGCHLD handler 地址（0 = SIG_DFL，1 = SIG_IGN）
-    pub sigchld_handler: usize,
-    /// SIGCHLD 待投递（子进程退出时置位；用户注册了 handler 才真正跳转）
-    pub sigchld_pending: bool,
+    /// 每个信号号的用户 handler（0 = SIG_DFL，1 = SIG_IGN）
+    pub signal_handlers: [usize; 32],
+    /// 待投递信号位图（bit = signo）
+    pub signal_pending: u32,
     /// 正在执行 SIGALRM handler（避免重入）
     pub in_sigalrm: bool,
     /// RLIMIT_NOFILE 的当前上限（fd 表硬上限；setrlimit/prlimit64 会改）
@@ -141,11 +137,9 @@ impl ProcessControlBlock {
                     dir_paths: alloc::collections::BTreeMap::new(),
                     dir_offsets: alloc::collections::BTreeMap::new(),
                     alarm_deadline: 0,
-                    sigalrm_handler: 0,
-                    sigalrm_pending: false,
+                    signal_handlers: [0usize; 32],
+                    signal_pending: 0,
                     in_sigalrm: false,
-                    sigchld_handler: 0,
-                    sigchld_pending: false,
                     nofile_limit: 1024,
                 })
             },
@@ -331,11 +325,9 @@ impl ProcessControlBlock {
                     dir_paths: alloc::collections::BTreeMap::new(),
                     dir_offsets: alloc::collections::BTreeMap::new(),
                     alarm_deadline: 0,
-                    sigalrm_handler: 0,
-                    sigalrm_pending: false,
+                    signal_handlers: [0usize; 32],
+                    signal_pending: 0,
                     in_sigalrm: false,
-                    sigchld_handler: 0,
-                    sigchld_pending: false,
                     nofile_limit: 1024,
                 })
             },

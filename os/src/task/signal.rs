@@ -3,7 +3,10 @@ use bitflags::*;
 bitflags! {
     pub struct SignalFlags: u32 {
         const SIGINT    = 1 << 2;
+        const SIGBUS    = 1 << 7;
         const SIGKILL   = 1 << 9;
+        const SIGUSR1   = 1 << 10;
+        const SIGUSR2   = 1 << 12;
         const SIGILL    = 1 << 4;
         const SIGTERM   = 1 << 15;
         const SIGCHLD   = 1 << 17;

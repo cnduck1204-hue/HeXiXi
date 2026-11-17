@@ -38,22 +38,31 @@ pub fn enable_timer_interrupt() {
     }
 }
 
-/// 用户态非法访问：打印诊断并给进程发 SIGSEGV（由信号检查逻辑退出）
+/// 用户态非法访问诊断。是否杀进程由调用方决定：
+/// 用户注册了 SIGSEGV handler 时应该投递 handler（lat_sig 的 prot 用例就靠这个）。
 fn report_user_fault(cause: Trap, stval: usize) {
-    {
-        let cx = current_trap_cx();
-        println!(
-            "[fault] pid={} {:?} sepc={:#x} stval={:#x} sp={:#x} ra={:#x} s0={:#x}",
-            crate::task::current_process().getpid(),
-            cause,
-            cx.sepc,
-            stval,
-            cx.x[2],
-            cx.x[1],
-            cx.x[8]
-        );
+    let cx = current_trap_cx();
+    println!(
+        "[fault] pid={} {:?} sepc={:#x} stval={:#x} sp={:#x} ra={:#x} s0={:#x}",
+        crate::task::current_process().getpid(),
+        cause,
+        cx.sepc,
+        stval,
+        cx.x[2],
+        cx.x[1],
+        cx.x[8]
+    );
+}
+
+fn handle_user_fault(cause: Trap, stval: usize) {
+    report_user_fault(cause, stval);
+    let sigsegv = crate::syscall::signal::SIGSEGV;
+    if crate::task::current_has_handler(sigsegv) {
+        // 用户 handler：投递后由 deliver_signal 跳到 handler，返回后指令重试
+        crate::task::current_set_pending(sigsegv);
+    } else {
+        current_add_signal(SignalFlags::SIGSEGV);
     }
-    current_add_signal(SignalFlags::SIGSEGV);
 }
 
 #[no_mangle]
@@ -89,12 +98,12 @@ pub fn trap_handler() -> ! {
                 }
                 trap_return();
             }
-            report_user_fault(scause.cause(), stval);
+            handle_user_fault(scause.cause(), stval);
         }
         Trap::Exception(Exception::StoreFault)
         | Trap::Exception(Exception::InstructionFault)
         | Trap::Exception(Exception::LoadFault) => {
-            report_user_fault(scause.cause(), stval);
+            handle_user_fault(scause.cause(), stval);
         }
         Trap::Exception(Exception::IllegalInstruction) => {
             current_add_signal(SignalFlags::SIGILL);

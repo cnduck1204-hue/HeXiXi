@@ -101,7 +101,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             pin.signals |= SignalFlags::SIGCHLD;
             // 除了给 sigtimedwait 留 pending 位，还要能真正跳进用户的 SIGCHLD handler
             // （lmbench 的 benchmp 依赖 SIGCHLD handler 感知子进程死亡）
-            pin.sigchld_pending = true;
+            pin.signal_pending |= 1u32 << 17; // SIGCHLD
         }
 
         {
@@ -212,6 +212,27 @@ pub fn check_kill_current() {
     }
     if term {
         exit_current_and_run_next(-15);
+    }
+}
+
+/// 当前进程是否给 signo 注册了真的用户 handler（不是 SIG_DFL/SIG_IGN）
+pub fn current_has_handler(signo: usize) -> bool {
+    current_process()
+        .inner_exclusive_access()
+        .signal_handlers
+        .get(signo)
+        .copied()
+        .unwrap_or(0)
+        > 1
+}
+
+/// 给当前进程置“待投递信号”位（用于 SIGSEGV handler 投递）
+pub fn current_set_pending(signo: usize) -> bool {
+    if signo < 32 {
+        current_process().inner_exclusive_access().signal_pending |= 1u32 << signo;
+        true
+    } else {
+        false
     }
 }
 
