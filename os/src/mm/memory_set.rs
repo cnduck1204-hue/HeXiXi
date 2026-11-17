@@ -60,6 +60,32 @@ impl MemorySet {
             None,
         );
     }
+    /// 只登记地址区间、不立刻分配物理帧（缺页时再按页分配）。
+    /// brk / mmap 用它，避免一次 mmap 就把整个区间全部实体化。
+    pub fn insert_lazy_area(
+        &mut self,
+        start_va: VirtAddr,
+        end_va: VirtAddr,
+        permission: MapPermission,
+    ) {
+        self.areas
+            .push(MapArea::new_lazy(start_va, end_va, permission));
+    }
+    /// 用户态缺页处理：vpn 落在某个 lazy 区间内就补一帧并建立映射，返回是否处理。
+    pub fn handle_page_fault(&mut self, vpn: VirtPageNum) -> bool {
+        for area in self.areas.iter_mut() {
+            let start = area.vpn_range.get_start();
+            let end = area.vpn_range.get_end();
+            if start <= vpn && vpn < end {
+                if area.lazy {
+                    area.map_one(&mut self.page_table, vpn);
+                    return true;
+                }
+                return false;
+            }
+        }
+        false
+    }
     /// 映射一个页并写入数据（用于信号 stub 等内核注入的用户页）
     pub fn insert_data_page(
         &mut self,
@@ -238,16 +264,24 @@ impl MemorySet {
         memory_set.map_trampoline();
         // copy data sections/trap_context/user_stack
         for area in user_space.areas.iter() {
-            let new_area = MapArea::from_another(area);
-            memory_set.push(new_area, None);
-            // copy data from another space
+            // 先登记区域，再按父进程“实际映射了哪些页”逐个复制。
+            // lazy 区（brk/mmap）大部分页在父进程里也是缺页未分配的，子进程保持同样状态，
+            // 既保证语义（缺页返回全零页），又不会 fork 时把几百 MB 地址空间全部实体化。
+            let mut new_area = MapArea::from_another(area);
             for vpn in area.vpn_range {
-                let src_ppn = user_space.translate(vpn).unwrap().ppn();
-                let dst_ppn = memory_set.translate(vpn).unwrap().ppn();
-                dst_ppn
-                    .get_bytes_array()
-                    .copy_from_slice(src_ppn.get_bytes_array());
+                if let Some(pte) = user_space.translate(vpn) {
+                    if !pte.is_valid() {
+                        continue;
+                    }
+                    let src_ppn = pte.ppn();
+                    new_area.map_one(&mut memory_set.page_table, vpn);
+                    let dst_ppn = memory_set.page_table.translate(vpn).unwrap().ppn();
+                    dst_ppn
+                        .get_bytes_array()
+                        .copy_from_slice(src_ppn.get_bytes_array());
+                }
             }
+            memory_set.areas.push(new_area);
         }
         memory_set
     }
@@ -272,6 +306,8 @@ pub struct MapArea {
     data_frames: BTreeMap<VirtPageNum, FrameTracker>,
     map_type: MapType,
     map_perm: MapPermission,
+    /// 惰性分配：区间登记时不分配物理帧，访问缺页时按页补
+    lazy: bool,
 }
 
 impl MapArea {
@@ -288,7 +324,13 @@ impl MapArea {
             data_frames: BTreeMap::new(),
             map_type,
             map_perm,
+            lazy: false,
         }
+    }
+    pub fn new_lazy(start_va: VirtAddr, end_va: VirtAddr, map_perm: MapPermission) -> Self {
+        let mut area = Self::new(start_va, end_va, MapType::Framed, map_perm);
+        area.lazy = true;
+        area
     }
     pub fn from_another(another: &MapArea) -> Self {
         Self {
@@ -296,6 +338,7 @@ impl MapArea {
             data_frames: BTreeMap::new(),
             map_type: another.map_type,
             map_perm: another.map_perm,
+            lazy: another.lazy,
         }
     }
     pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
@@ -317,7 +360,14 @@ impl MapArea {
         if self.map_type == MapType::Framed {
             self.data_frames.remove(&vpn);
         }
-        page_table.unmap(vpn);
+        // lazy 区里可能有从未缺页访问过的页，此时页表里没有有效 PTE，不能 unmap
+        let valid = page_table
+            .translate(vpn)
+            .map(|pte| pte.is_valid())
+            .unwrap_or(false);
+        if valid {
+            page_table.unmap(vpn);
+        }
     }
     pub fn map(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
@@ -366,6 +416,15 @@ bitflags! {
         const X = 1 << 3;
         const U = 1 << 4;
     }
+}
+
+/// 用户态缺页入口：找到当前进程，交给它的 MemorySet 处理。
+/// 返回 true 表示已补页，调用者刷新 TLB 后直接返回用户态即可。
+pub fn handle_user_page_fault(stval: usize) -> bool {
+    let vpn = VirtPageNum(stval / PAGE_SIZE);
+    let process = crate::task::current_process();
+    let mut inner = process.inner_exclusive_access();
+    inner.memory_set.handle_page_fault(vpn)
 }
 
 #[allow(unused)]

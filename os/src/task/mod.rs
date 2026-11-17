@@ -93,6 +93,12 @@ pub fn exit_current_and_run_next(exit_code: i32) {
         process_inner.is_zombie = true;
         // record exit code of main process
         process_inner.exit_code = exit_code;
+        // 子进程退出 → 给父进程投递 SIGCHLD。
+        // libc-test 的 runtest 在 fork 之后用 sigtimedwait(SIGCHLD) 等子进程结束，
+        // 不投递的话每次测试都要空等 5s 超时。
+        if let Some(parent) = process_inner.parent.as_ref().and_then(|p| p.upgrade()) {
+            parent.inner_exclusive_access().signals |= SignalFlags::SIGCHLD;
+        }
 
         {
             // move all child processes under init process
@@ -129,12 +135,21 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
         let mut process_inner = process.inner_exclusive_access();
         process_inner.children.clear();
+        // 主线程此刻还在自己的内核栈上跑：如果随 tasks.clear() 一起 drop，
+        // KernelStack::drop 会把当前内核栈从内核页表 unmap，接着的栈访问就缺页
+        //（libcbench/ltp 的 kernel StorePageFault 就是这个原因：TLB 没失效时侥幸不炸）。
+        let main_task = process_inner.tasks.get_mut(0).and_then(|t| t.take());
         // deallocate other data in user space i.e. program code/data section
         process_inner.memory_set.recycle_data_pages();
         // drop file descriptors
         process_inner.fd_table.clear();
         // remove all tasks
         process_inner.tasks.clear();
+        drop(process_inner);
+        // 交给延迟回收队列，下次在别的内核栈上再真正析构
+        if let Some(t) = main_task {
+            recycle_task(t);
+        }
     } else {
         // 普通线程退出：先按 CLONE_CHILD_CLEARTID 语义清零 tid 并唤醒 join 者
         let cctid = clear_child_tid;
@@ -177,6 +192,25 @@ pub fn add_initproc() {
     let _initproc = INITPROC.clone();
 }
 
+/// 进程被 kill(SIGKILL) 后，在内核里的轮询/等待循环中尽快退出。
+/// （用户态循环靠时钟中断里的信号检查退出；内核态等待循环必须主动检查）
+pub fn check_kill_current() {
+    let process = current_process();
+    let (kill, term) = {
+        let inner = process.inner_exclusive_access();
+        (
+            inner.signals.contains(SignalFlags::SIGKILL),
+            inner.signals.contains(SignalFlags::SIGTERM),
+        )
+    };
+    if kill {
+        exit_current_and_run_next(-9);
+    }
+    if term {
+        exit_current_and_run_next(-15);
+    }
+}
+
 pub fn check_signals_of_current() -> Option<(i32, &'static str)> {
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
@@ -204,8 +238,11 @@ pub fn recycle_task(task: Arc<TaskControlBlock>) {
     RECYCLE_QUEUE.exclusive_access().push(task);
 }
 
+/// 在“别的内核栈”上真正析构已退出线程的 TCB。
+/// 析构会 unmap 它的内核栈，所以绝不能析构正在运行的那个任务（那等于拆自己的梯子）。
+/// 调用点：trap_handler 入口（此时 sp 属于即将运行的任务，不是队列里的任何 TCB）。
 pub fn drain_recycled_tasks() {
-    // 调试：暂时不析构（避免怀疑中的 use-after-free），改为只清空引用计数
+    let cur = current_task();
     let tasks: Vec<Arc<TaskControlBlock>> = {
         let mut q = RECYCLE_QUEUE.exclusive_access();
         if q.is_empty() {
@@ -213,9 +250,22 @@ pub fn drain_recycled_tasks() {
         }
         core::mem::take(&mut *q)
     };
-    // 暂不析构：析构会释放内核栈，实测在大量线程场景下引发内核态缺页。
-    // 待找到安全回收点后再切换回 drop(tasks)。
+    let mut requeue: Vec<Arc<TaskControlBlock>> = Vec::new();
     for t in tasks {
-        core::mem::forget(t);
+        let is_current = match &cur {
+            Some(c) => Arc::ptr_eq(c, &t),
+            None => false,
+        };
+        if is_current {
+            requeue.push(t);
+        } else {
+            drop(t);
+        }
+    }
+    if !requeue.is_empty() {
+        let mut q = RECYCLE_QUEUE.exclusive_access();
+        for t in requeue {
+            q.push(t);
+        }
     }
 }

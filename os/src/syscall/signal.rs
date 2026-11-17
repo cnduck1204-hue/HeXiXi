@@ -88,6 +88,14 @@ pub fn check_alarm() {
     }
 }
 
+/// 内核忙等循环（waitpid / futex …）里调用：SIGALRM 已到期则返回 true。
+/// 调用者应立刻返回 -EINTR，这样回到用户态后 deliver_signal 才能执行超时 handler。
+/// （LTP 的超时杀子进程、busybox timeout 都依赖这个）
+pub fn alarm_interrupts() -> bool {
+    check_alarm();
+    current_process().inner_exclusive_access().sigalrm_pending
+}
+
 /// 返回用户态前调用：若有待投递的 SIGALRM，改成跳到 handler
 pub fn deliver_signal() {
     let process = current_process();

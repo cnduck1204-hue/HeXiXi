@@ -137,6 +137,40 @@ impl PageTable {
     }
 }
 
+/// 内核代用户访问内存前，确保目标虚拟页已经有有效 PTE。
+/// brk/mmap 是惰性映射：内核直接读写用户缓冲区（read/write/pipe/stat ...）时，
+/// 这些页可能还没被用户态碰过、页表里也没有 PTE，这里补一次缺页。
+/// 返回 false 表示不是当前进程可补页的合法地址。
+/// 非法用户地址的落点：一块内核哑页。写进去的数据被丢弃，读出来是 0。
+/// 目的：系统调用拿到空指针/越界指针时不要 panic 掉整个内核（LTP 会大量这么干）。
+static mut DUMMY_USER_PAGE: [u8; 4096] = [0u8; 4096];
+
+fn dummy_user_page() -> *mut u8 {
+    unsafe { core::ptr::addr_of_mut!(DUMMY_USER_PAGE) as *mut u8 }
+}
+
+fn ensure_user_page_mapped(token: usize, va: usize) -> bool {
+    let vpn = VirtAddr::from(va).floor();
+    // 快路径：已经有有效 PTE 就不需要动进程锁
+    let mapped = PageTable::from_token(token)
+        .translate(vpn)
+        .map(|pte| pte.is_valid())
+        .unwrap_or(false);
+    if mapped {
+        return true;
+    }
+    if let Some(task) = crate::task::current_task() {
+        if let Some(process) = task.process.upgrade() {
+            if let Some(mut inner) = process.try_inner_exclusive_access() {
+                if inner.memory_set.token() == token {
+                    return inner.memory_set.handle_page_fault(vpn);
+                }
+            }
+        }
+    }
+    false
+}
+
 pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
     let page_table = PageTable::from_token(token);
     let mut start = ptr as usize;
@@ -145,16 +179,26 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
     while start < end {
         let start_va = VirtAddr::from(start);
         let mut vpn = start_va.floor();
-        let ppn = page_table.translate(vpn).unwrap().ppn();
         vpn.step();
         let mut end_va: VirtAddr = vpn.into();
         end_va = end_va.min(VirtAddr::from(end));
+        let page_end = usize::from(end_va);
+        if !ensure_user_page_mapped(token, start) {
+            // 非法用户缓冲区：退回哑页（读 0 / 写丢弃），不让内核 panic
+            let n = if page_end > start { page_end - start } else { 0 };
+            if n > 0 {
+                v.push(unsafe { core::slice::from_raw_parts_mut(dummy_user_page(), n) });
+            }
+            start = page_end;
+            continue;
+        }
+        let ppn = page_table.translate(start_va.floor()).unwrap().ppn();
         if end_va.page_offset() == 0 {
             v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..]);
         } else {
             v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..end_va.page_offset()]);
         }
-        start = end_va.into();
+        start = page_end;
     }
     v
 }
@@ -164,7 +208,16 @@ pub fn translated_str(token: usize, ptr: *const u8) -> String {
     let page_table = PageTable::from_token(token);
     let mut string = String::new();
     let mut va = ptr as usize;
+    let mut checked_vpn = usize::MAX;
     loop {
+        let vpn = VirtAddr::from(va).floor().0;
+        if vpn != checked_vpn {
+            if !ensure_user_page_mapped(token, va) {
+                // 非法指针：按空串处理，避免内核 panic
+                return string;
+            }
+            checked_vpn = vpn;
+        }
         let ch: u8 = *(page_table
             .translate_va(VirtAddr::from(va))
             .unwrap()
@@ -174,21 +227,32 @@ pub fn translated_str(token: usize, ptr: *const u8) -> String {
         }
         string.push(ch as char);
         va += 1;
+        // 防御：用户给的“字符串”可能没有结尾 0
+        if string.len() > 4095 {
+            break;
+        }
     }
     string
 }
 
 pub fn translated_ref<T>(token: usize, ptr: *const T) -> &'static T {
+    let va = ptr as usize;
+    if !ensure_user_page_mapped(token, va) {
+        return unsafe { &*(dummy_user_page() as *const T) };
+    }
     let page_table = PageTable::from_token(token);
     page_table
-        .translate_va(VirtAddr::from(ptr as usize))
+        .translate_va(VirtAddr::from(va))
         .unwrap()
         .get_ref()
 }
 
 pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
-    let page_table = PageTable::from_token(token);
     let va = ptr as usize;
+    if !ensure_user_page_mapped(token, va) {
+        return unsafe { &mut *(dummy_user_page() as *mut T) };
+    }
+    let page_table = PageTable::from_token(token);
     page_table
         .translate_va(VirtAddr::from(va))
         .unwrap()

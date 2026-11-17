@@ -26,4 +26,8 @@ impl<T> UPSafeCell<T> {
     pub fn exclusive_access(&self) -> RefMut<'_, T> {
         self.inner.borrow_mut()
     }
+    /// 若数据已被借用则返回 None。缺页补页路径用它，避免在持有锁时补页造成死锁。
+    pub fn try_exclusive_access(&self) -> Option<RefMut<'_, T>> {
+        self.inner.try_borrow_mut().ok()
+    }
 }

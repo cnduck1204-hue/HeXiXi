@@ -92,6 +92,11 @@ impl ProcessControlBlock {
         self.inner.exclusive_access()
     }
 
+    /// 拿不到（已被借用）时返回 None，供内核代用户访问内存/补缺页时探测使用
+    pub fn try_inner_exclusive_access(&self) -> Option<RefMut<'_, ProcessControlBlockInner>> {
+        self.inner.try_exclusive_access()
+    }
+
     pub fn new(elf_data: &[u8]) -> Arc<Self> {
         // memory_set with elf program headers/trampoline/trap context/user stack
         let (mut memory_set, ustack_base, entry_point) = MemorySet::from_elf(elf_data);

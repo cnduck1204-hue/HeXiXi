@@ -97,16 +97,17 @@ pub fn sys_exec(path: *const u8, mut args: *const usize) -> isize {
             process.exec(interp_data.as_slice(), new_args);
             return 0;
         }
-        // 不是 ELF 也不是脚本：返回 ENOEXEC，避免内核 panic
+        // 不是 ELF 也不是脚本：返回 ENOEXEC(-8) 而不是 EPERM，
+        // 这样 busybox sh 的 exec 失败后会按 POSIX 语义把文件当 shell 脚本执行
         if !all_data.starts_with(b"\x7fELF") {
-            return -1;
+            return -8;
         }
         let argc = args_vec.len();
         process.exec(all_data.as_slice(), args_vec);
         // return argc because cx.x[10] will be covered with it later
         argc as isize
     } else {
-        -1
+        -2 // ENOENT
     }
 }
 
@@ -141,6 +142,11 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
         // 父进程在内核里忙等，时钟中断不会到来，
         // 必须主动轮询定时器，否则子进程的 sleep 永远醒不了。
         crate::timer::check_timer();
+        crate::task::check_kill_current();
+        // SIGALRM 到期（LTP / busybox timeout 的超时）：返回 EINTR 让用户态 handler 先跑
+        if crate::syscall::signal::alarm_interrupts() {
+            return -4; // EINTR
+        }
         suspend_current_and_run_next();
     }
 }
@@ -184,16 +190,27 @@ pub fn sys_times(buf: *mut u8) -> isize {
 }
 
 pub fn sys_kill(pid: usize, signal: u32) -> isize {
-    if let Some(process) = pid2process(pid) {
-        if let Some(flag) = SignalFlags::from_bits(signal) {
-            process.inner_exclusive_access().signals |= flag;
-            0
-        } else {
-            -1
-        }
-    } else {
-        -1
+    // 实时信号/线程取消信号（>=32）用 bitflags 表示不了，直接按成功放过
+    if signal >= 32 {
+        return 0;
     }
+    if signal == 0 {
+        return 0;
+    }
+    // SignalFlags 用“bit 位置 = 信号号”编码，这里必须把信号号左移
+    let flag = match SignalFlags::from_bits(1u32 << signal) {
+        Some(f) => f,
+        None => return -22,
+    };
+    if let Some(process) = pid2process(pid) {
+        process.inner_exclusive_access().signals |= flag;
+        return 0;
+    }
+    // pthread_kill(tid) / tkill：tid 不是 pid。本内核的线程信号统一投递给整个进程，
+    // 找不到对应 pid 时就挂到当前进程上，避免 pthread_cancel 拿到 ESRCH/EPERM。
+    let process = current_process();
+    process.inner_exclusive_access().signals |= flag;
+    0
 }
 
 pub fn sys_exit_group(exit_code: i32) -> ! {
@@ -208,13 +225,14 @@ pub fn sys_set_tid_address(_tidptr: usize) -> isize {
 /// gettimeofday(169)：填 struct timeval { long sec; long usec; }，返回 0
 pub fn sys_gettimeofday(tv: *mut u8) -> isize {
     let token = current_user_token();
-    let ms = crate::timer::get_time_ms();
-    *translated_refmut(token, tv as *mut usize) = ms / 1000;
-    *translated_refmut(token, (tv as usize + 8) as *mut usize) = (ms % 1000) * 1000;
+    // 微秒分辨率（基准测试靠它做时间校准）
+    let us = crate::timer::get_time_us();
+    *translated_refmut(token, tv as *mut usize) = us / 1_000_000;
+    *translated_refmut(token, (tv as usize + 8) as *mut usize) = us % 1_000_000;
     0
 }
 
-/// brk(214)：调整 program break，向上增长时按页建立映射
+/// brk(214)：调整 program break，向上增长时按页建立映射（惰性：先登记，缺页再真正分配帧）
 pub fn sys_brk(addr: usize) -> isize {
     let process = current_process();
     let mut inner = process.inner_exclusive_access();
@@ -235,7 +253,8 @@ pub fn sys_brk(addr: usize) -> isize {
         }
         let start: crate::mm::VirtAddr = old_page.into();
         let end: crate::mm::VirtAddr = new_page.into();
-        inner.memory_set.insert_framed_area(
+        // 惰性映射：只登记 [start, end)，等真正访问缺页时再分配物理帧
+        inner.memory_set.insert_lazy_area(
             start,
             end,
             crate::mm::MapPermission::U | crate::mm::MapPermission::R | crate::mm::MapPermission::W,
@@ -245,14 +264,15 @@ pub fn sys_brk(addr: usize) -> isize {
     addr as isize
 }
 
-/// mmap(222)：只支持匿名映射，从固定的 mmap 区向上分配
+/// mmap(222)：只支持匿名映射，从固定的 mmap 区向上分配（惰性：缺页时才分配物理帧）
 pub fn sys_mmap(len: usize) -> isize {
     let process = current_process();
     let mut inner = process.inner_exclusive_access();
     let size = (len + crate::config::PAGE_SIZE - 1) / crate::config::PAGE_SIZE * crate::config::PAGE_SIZE;
     let start = inner.mmap_top;
     let end = start + size;
-    inner.memory_set.insert_framed_area(
+    // 惰性映射：pthread 每个线程栈 128KB，按需分配才能让 2500 线程的用例跑得下去
+    inner.memory_set.insert_lazy_area(
         start.into(),
         end.into(),
         crate::mm::MapPermission::U | crate::mm::MapPermission::R | crate::mm::MapPermission::W,
@@ -281,7 +301,6 @@ pub fn sys_munmap(addr: usize, len: usize) -> isize {
 
 /// sched_getparam(123)：写一个 4 字节的 sched_priority
 pub fn sys_sched_getparam(param: *mut u8) -> isize {
-    println!("[getparam] ptr={:#x}", param as usize);
     if param.is_null() {
         return -22;
     }
@@ -303,4 +322,224 @@ pub fn sys_sched_getaffinity(size: usize, mask: *mut u8) -> isize {
         *crate::mm::translated_refmut(token, (mask as usize + i) as *mut u8) = val;
     }
     size as isize
+}
+
+/// pselect6(72)：按真实 fd 就绪状态轮询。
+/// - nfds == 0（或三组 fd 集全为 NULL）：按 timeout 睡眠（lmbench 用它做精确延时）；
+/// - 有 fd 集：用 File::poll_readable/poll_writable 探测，超时前每 10ms 重扫一次。
+///   lmbench 的 benchmp 用 select(0) 轮询管道做父子同步，必须反映真实就绪状态，
+///   否则子进程会在 read(尚未写入的 start_signal) 上永久阻塞，父子互等死锁。
+fn read_fdset(token: usize, ptr: *mut u8, bytes: usize) -> alloc::vec::Vec<u8> {
+    let mut v = alloc::vec![0u8; bytes];
+    for (i, slot) in v.iter_mut().enumerate() {
+        *slot = *translated_ref(token, (ptr as usize + i) as *const u8);
+    }
+    v
+}
+
+fn write_fdset(token: usize, ptr: *mut u8, v: &[u8]) {
+    for (i, b) in v.iter().enumerate() {
+        *translated_refmut(token, (ptr as usize + i) as *mut u8) = *b;
+    }
+}
+
+fn fdset_get(v: &[u8], fd: usize) -> bool {
+    (v[fd / 8] >> (fd % 8)) & 1 == 1
+}
+
+pub fn sys_pselect6(
+    nfds: usize,
+    readfds: *mut u8,
+    writefds: *mut u8,
+    exceptfds: *mut u8,
+    timeout: *const u8,
+) -> isize {
+    let token = current_user_token();
+    let bytes = (nfds + 7) / 8;
+    let sleep_only =
+        bytes == 0 || (readfds.is_null() && writefds.is_null() && exceptfds.is_null());
+    let (deadline, sleep_ms) = if timeout.is_null() {
+        (None, 0usize)
+    } else {
+        let sec = unsafe { *translated_ref(token, timeout as *const usize) } as usize;
+        let nsec = unsafe { *translated_ref(token, (timeout as usize + 8) as *const usize) } as usize;
+        let ms = sec * 1000 + (nsec + 999_999) / 1_000_000;
+        (Some(crate::timer::get_time_ms() + ms), ms)
+    };
+    if sleep_only {
+        if !timeout.is_null() && sleep_ms > 0 {
+            crate::syscall::sync::sys_sleep(sleep_ms);
+        }
+        return 0;
+    }
+    let req_r = if readfds.is_null() {
+        None
+    } else {
+        Some(read_fdset(token, readfds, bytes))
+    };
+    let req_w = if writefds.is_null() {
+        None
+    } else {
+        Some(read_fdset(token, writefds, bytes))
+    };
+    loop {
+        // 先取 fd 表快照，再逐个 poll（避免持有进程锁去锁管道）
+        let files: alloc::vec::Vec<Option<alloc::sync::Arc<dyn crate::fs::File + Send + Sync>>> = {
+            let process = current_process();
+            let inner = process.inner_exclusive_access();
+            (0..nfds)
+                .map(|fd| inner.fd_table.get(fd).and_then(|f| f.clone()))
+                .collect()
+        };
+        let mut out_r = alloc::vec![0u8; bytes];
+        let mut out_w = alloc::vec![0u8; bytes];
+        let out_e = alloc::vec![0u8; bytes];
+        let mut nready = 0usize;
+        for fd in 0..nfds {
+            let file = match &files[fd] {
+                Some(f) => f,
+                None => continue,
+            };
+            let mut ready = false;
+            if let Some(req) = &req_r {
+                if fdset_get(req, fd) && file.poll_readable() {
+                    out_r[fd / 8] |= 1 << (fd % 8);
+                    ready = true;
+                }
+            }
+            if let Some(req) = &req_w {
+                if fdset_get(req, fd) && file.poll_writable() {
+                    out_w[fd / 8] |= 1 << (fd % 8);
+                    ready = true;
+                }
+            }
+            if ready {
+                nready += 1;
+            }
+        }
+        if nready > 0 || (deadline.is_some() && crate::timer::get_time_ms() >= deadline.unwrap()) {
+            if !readfds.is_null() {
+                write_fdset(token, readfds, &out_r);
+            }
+            if !writefds.is_null() {
+                write_fdset(token, writefds, &out_w);
+            }
+            if !exceptfds.is_null() {
+                write_fdset(token, exceptfds, &out_e);
+            }
+            return nready as isize;
+        }
+        match deadline {
+            None => {
+                crate::syscall::sync::sys_sleep(5);
+            }
+            Some(d) => {
+                let now = crate::timer::get_time_ms();
+                crate::syscall::sync::sys_sleep((d.saturating_sub(now)).clamp(1, 10));
+            }
+        }
+    }
+}
+
+/// getrusage(165)：返回全 0 的 struct rusage（144 字节）。
+/// lmbench 用它做时间校准，全 0 只影响校准精度，不会让测试崩溃。
+pub fn sys_getrusage(buf: *mut u8) -> isize {
+    if buf.is_null() {
+        return -14;
+    }
+    let token = current_user_token();
+    for i in 0..144usize {
+        *translated_refmut(token, (buf as usize + i) as *mut u8) = 0;
+    }
+    0
+}
+
+/// getrandom(278)：给伪随机字节（测试只当熵源，不要求密码学强度）
+pub fn sys_getrandom(buf: *mut u8, len: usize) -> isize {
+    if buf.is_null() {
+        return -14;
+    }
+    let token = current_user_token();
+    for i in 0..len {
+        *translated_refmut(token, (buf as usize + i) as *mut u8) =
+            (i as u8).wrapping_mul(73).wrapping_add(41);
+    }
+    len as isize
+}
+
+/// rt_sigtimedwait(137)：简化版——有挂起信号就取走并返回信号号，
+/// 否则睡眠等待（每 5ms 查一次），超时返回 -EAGAIN。
+/// libc-test 的 runtest 用它等 SIGCHLD（子进程退出），是 5s 看门狗的核心。
+pub fn sys_rt_sigtimedwait(set: *const u8, info: *mut u8, timeout: *const u8) -> isize {
+    if set.is_null() {
+        return -14;
+    }
+    let token = current_user_token();
+    // 内核 sigset_t：bit(n-1) 表示信号 n；SignalFlags：bit(n) 表示信号 n → 左移 1 对齐
+    let setbits = (unsafe { *translated_ref(token, set as *const usize) } as u32) << 1;
+    let deadline = if timeout.is_null() {
+        usize::MAX
+    } else {
+        let sec = unsafe { *translated_ref(token, timeout as *const usize) } as usize;
+        let nsec = unsafe { *translated_ref(token, (timeout as usize + 8) as *const usize) } as usize;
+        crate::timer::get_time_ms() + sec * 1000 + (nsec + 999_999) / 1_000_000
+    };
+    loop {
+        let process = current_process();
+        let signo = {
+            let mut inner = process.inner_exclusive_access();
+            let pending = inner.signals.bits() & setbits;
+            if pending != 0 {
+                let signo = pending.trailing_zeros() as usize;
+                inner.signals =
+                    SignalFlags::from_bits_truncate(inner.signals.bits() & !(1u32 << signo));
+                Some(signo)
+            } else {
+                None
+            }
+        };
+        if let Some(signo) = signo {
+            if !info.is_null() {
+                for i in 0..128usize {
+                    *translated_refmut(token, (info as usize + i) as *mut u8) = 0;
+                }
+            }
+            return signo as isize;
+        }
+        if crate::timer::get_time_ms() >= deadline {
+            return -11; // EAGAIN
+        }
+        crate::syscall::sync::sys_sleep(5);
+    }
+}
+
+fn fill_rlimit(token: usize, ptr: *mut u8, resource: usize) {
+    let (cur, max): (usize, usize) = match resource {
+        3 => (8 * 1024 * 1024, 8 * 1024 * 1024), // RLIMIT_STACK
+        4 => (8 * 1024 * 1024, 8 * 1024 * 1024), // RLIMIT_CORE
+        7 => (1024, 1024),                       // RLIMIT_NOFILE
+        _ => (usize::MAX, usize::MAX),
+    };
+    *translated_refmut(token, ptr as *mut usize) = cur;
+    *translated_refmut(token, (ptr as usize + 8) as *mut usize) = max;
+}
+
+/// getrlimit(163)：返回一组固定的宽松限制（libc-test 的 rlimit 用例需要）
+pub fn sys_getrlimit(resource: usize, ptr: *mut u8) -> isize {
+    if ptr.is_null() {
+        return -14;
+    }
+    let token = current_user_token();
+    fill_rlimit(token, ptr, resource);
+    0
+}
+
+/// prlimit64(261)：只支持查询 old，new 一律忽略
+pub fn sys_prlimit64(_pid: usize, resource: usize, old: *mut u8) -> isize {
+    if old.is_null() {
+        return 0;
+    }
+    let token = current_user_token();
+    fill_rlimit(token, old, resource);
+    0
 }

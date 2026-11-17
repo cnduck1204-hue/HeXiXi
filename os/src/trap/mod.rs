@@ -38,9 +38,29 @@ pub fn enable_timer_interrupt() {
     }
 }
 
+/// 用户态非法访问：打印诊断并给进程发 SIGSEGV（由信号检查逻辑退出）
+fn report_user_fault(cause: Trap, stval: usize) {
+    {
+        let cx = current_trap_cx();
+        println!(
+            "[fault] pid={} {:?} sepc={:#x} stval={:#x} sp={:#x} ra={:#x} s0={:#x}",
+            crate::task::current_process().getpid(),
+            cause,
+            cx.sepc,
+            stval,
+            cx.x[2],
+            cx.x[1],
+            cx.x[8]
+        );
+    }
+    current_add_signal(SignalFlags::SIGSEGV);
+}
+
 #[no_mangle]
 pub fn trap_handler() -> ! {
     set_kernel_trap_entry();
+    // 在别人的内核栈上析构已退出线程（不能在自己的栈上析构）
+    crate::task::drain_recycled_tasks();
     let scause = scause::read();
     let stval = stval::read();
     match scause.cause() {
@@ -58,30 +78,23 @@ pub fn trap_handler() -> ! {
                 cx.x[10] = result as usize;
             }
         }
-        Trap::Exception(Exception::StoreFault)
-        | Trap::Exception(Exception::StorePageFault)
-        | Trap::Exception(Exception::InstructionFault)
-        | Trap::Exception(Exception::InstructionPageFault)
-        | Trap::Exception(Exception::LoadFault)
-        | Trap::Exception(Exception::LoadPageFault) => {
-            /*
-            println!(
-                "[kernel] {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
-                scause.cause(),
-                stval,
-                current_trap_cx().sepc,
-            );
-            */
-            {
-                let cx = current_trap_cx();
-                println!(
-                    "[fault] pid={} {:?} sepc={:#x} stval={:#x} sp={:#x} ra={:#x} s0={:#x}",
-                    crate::task::current_process().getpid(),
-                    scause.cause(),
-                    cx.sepc, stval, cx.x[2], cx.x[1], cx.x[8]
-                );
+        Trap::Exception(Exception::StorePageFault)
+        | Trap::Exception(Exception::LoadPageFault)
+        | Trap::Exception(Exception::InstructionPageFault) => {
+            // brk/mmap 是惰性映射：第一次访问触发缺页，在这里补一帧后继续执行
+            if crate::mm::handle_user_page_fault(stval) {
+                // 补完 PTE 必须刷新 TLB，否则会再次缺页
+                unsafe {
+                    asm!("sfence.vma");
+                }
+                trap_return();
             }
-            current_add_signal(SignalFlags::SIGSEGV);
+            report_user_fault(scause.cause(), stval);
+        }
+        Trap::Exception(Exception::StoreFault)
+        | Trap::Exception(Exception::InstructionFault)
+        | Trap::Exception(Exception::LoadFault) => {
+            report_user_fault(scause.cause(), stval);
         }
         Trap::Exception(Exception::IllegalInstruction) => {
             current_add_signal(SignalFlags::SIGILL);
@@ -132,35 +145,39 @@ pub fn trap_return() -> ! {
 
 #[no_mangle]
 pub fn trap_from_kernel() -> ! {
+    use core::fmt::Write;
     use riscv::register::sepc;
-    // 裸输出：不依赖堆/格式化，避免在内存已损坏时二次 fault
-    fn raw_str(s: &str) {
-        for c in s.bytes() {
-            crate::sbi::console_putchar(c as usize);
-        }
-    }
-    fn raw_hex(v: usize) {
-        raw_str("0x");
-        let mut started = false;
-        for i in (0..16).rev() {
-            let d = (v >> (i * 4)) & 0xf;
-            if d != 0 || started || i == 0 {
-                started = true;
-                crate::sbi::console_putchar(if d < 10 { b'0' + d as u8 } else { b'a' + (d as u8 - 10) } as usize);
+
+    /// 裸串口 writer：panic 时堆可能已损坏，不能用 println!
+    struct RawConsole;
+    impl Write for RawConsole {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            for b in s.bytes() {
+                crate::sbi::console_putchar(b as usize);
             }
+            Ok(())
         }
     }
-    raw_str("\n[kfault] stval=");
-    raw_hex(stval::read());
-    raw_str(" sepc=");
-    raw_hex(sepc::read());
-    raw_str(" pid=");
-    raw_hex(crate::task::current_task()
+
+    let mut c = RawConsole;
+    let pid = crate::task::current_task()
         .map(|t| t.process.upgrade().map(|p| p.getpid()).unwrap_or(0))
-        .unwrap_or(0));
-    raw_str(" last_sys=");
-    raw_hex(crate::syscall::LAST_SYSCALL.load(core::sync::atomic::Ordering::Relaxed));
-    raw_str("\n");
+        .unwrap_or(0);
+    let _ = write!(
+        c,
+        "\n[kfault] scause={:?} stval={:#x} sepc={:#x} pid={} last_sys={}\n",
+        scause::read().cause(),
+        stval::read(),
+        sepc::read(),
+        pid,
+        crate::syscall::LAST_SYSCALL.load(core::sync::atomic::Ordering::Relaxed)
+    );
+    let _ = write!(c, "[kfault] last syscalls:");
+    for i in 0..8 {
+        let v = crate::syscall::LAST_SYSCALLS[i].load(core::sync::atomic::Ordering::Relaxed);
+        let _ = write!(c, " {}", v);
+    }
+    let _ = write!(c, "\n");
     panic!("a trap {:?} from kernel!", scause::read().cause());
 }
 

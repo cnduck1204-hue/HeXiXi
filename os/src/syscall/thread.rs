@@ -163,6 +163,10 @@ pub fn sys_futex(uaddr: usize, op: usize, val: usize) -> isize {
                 if cur != val {
                     return 0;
                 }
+                crate::task::check_kill_current();
+                if crate::syscall::signal::alarm_interrupts() {
+                    return -4; // EINTR
+                }
                 crate::task::suspend_current_and_run_next();
             }
         }

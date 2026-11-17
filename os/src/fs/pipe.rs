@@ -112,6 +112,15 @@ impl File for Pipe {
     fn writable(&self) -> bool {
         self.writable
     }
+    /// lmbench 的 benchmp 用 select(0 超时) 轮询管道就绪；必须反映真实状态，
+    /// 否则 select 假就绪 → 子进程在 read(尚未写入的 start_signal) 上阻塞 → 父子死锁。
+    fn poll_readable(&self) -> bool {
+        let b = self.buffer.exclusive_access();
+        b.available_read() > 0 || b.all_write_ends_closed()
+    }
+    fn poll_writable(&self) -> bool {
+        self.buffer.exclusive_access().available_write() > 0
+    }
     fn read(&self, buf: UserBuffer) -> usize {
         assert!(self.readable());
         let mut buf_iter = buf.into_iter();
@@ -128,6 +137,7 @@ impl File for Pipe {
                 if read_size > 0 {
                     return read_size;
                 }
+                crate::task::check_kill_current();
                 suspend_current_and_run_next();
                 continue;
             }
@@ -153,6 +163,7 @@ impl File for Pipe {
             let loop_write = ring_buffer.available_write();
             if loop_write == 0 {
                 drop(ring_buffer);
+                crate::task::check_kill_current();
                 suspend_current_and_run_next();
                 continue;
             }

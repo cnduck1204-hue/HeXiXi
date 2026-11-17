@@ -151,9 +151,10 @@ pub fn sys_nanosleep(req: usize, _rem: usize) -> isize {
 /// clock_gettime(113)：只填 timespec 的秒/纳秒
 pub fn sys_clock_gettime(tp: *mut u8) -> isize {
     let token = crate::task::current_user_token();
-    let ms = get_time_ms();
-    let sec = (ms / 1000) as usize;
-    let nsec = ((ms % 1000) * 1_000_000) as usize;
+    // 用 SBI time CSR（12.5MHz）换算，纳秒精度
+    let ns = crate::timer::get_time_ns();
+    let sec = ns / 1_000_000_000;
+    let nsec = ns % 1_000_000_000;
     *crate::mm::translated_refmut(token, tp as *mut usize) = sec;
     *crate::mm::translated_refmut(token, (tp as usize + 8) as *mut usize) = nsec;
     0

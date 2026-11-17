@@ -26,6 +26,14 @@ pub trait File: Send + Sync {
     fn set_len(&self, _len: usize) -> isize {
         0
     }
+    /// 非阻塞探测：是否有数据可读（select/pselect 用；普通文件恒为 true）
+    fn poll_readable(&self) -> bool {
+        true
+    }
+    /// 非阻塞探测：是否可写
+    fn poll_writable(&self) -> bool {
+        true
+    }
 }
 
 pub use inode::{is_unlinked, list_apps, mark_unlinked, open_file, root_names, OSInode, OpenFlags};

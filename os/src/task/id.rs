@@ -232,6 +232,10 @@ impl TaskUserRes {
 
 impl Drop for TaskUserRes {
     fn drop(&mut self) {
+        // 延迟回收 TCB 时进程可能已经析构（Weak 升级失败），此时直接跳过
+        if self.process.upgrade().is_none() {
+            return;
+        }
         self.dealloc_tid();
         self.dealloc_user_res();
     }

@@ -20,6 +20,17 @@ pub fn get_time_ms() -> usize {
     time::read() / (CLOCK_FREQ / MSEC_PER_SEC)
 }
 
+/// 微秒级时间。基准测试（lmbench/unixbench）需要 us 级分辨率，
+/// 原来只给 ms，自适应迭代次数会涨到 1<<27 而卡住。
+pub fn get_time_us() -> usize {
+    time::read() * 1_000_000 / CLOCK_FREQ
+}
+
+/// 纳秒级时间（12.5MHz 时基 → 80ns 精度）
+pub fn get_time_ns() -> usize {
+    time::read() * (1_000_000_000 / CLOCK_FREQ)
+}
+
 pub fn set_next_trigger() {
     set_timer(get_time() + CLOCK_FREQ / TICKS_PER_SEC);
 }
