@@ -48,6 +48,8 @@ const SYSCALL_SYSLOG: usize = 116;
 const SYSCALL_SETITIMER: usize = 103;
 const SYSCALL_RT_SIGRETURN: usize = 139;
 const SYSCALL_CLOCK_GETTIME: usize = 113;
+const SYSCALL_CLOCK_GETRES: usize = 114;
+const SYSCALL_CLOCK_NANOSLEEP: usize = 115;
 const SYSCALL_TIMES: usize = 153;
 const SYSCALL_UNAME: usize = 160;
 const SYSCALL_YIELD: usize = 124;
@@ -61,8 +63,10 @@ const SYSCALL_SCHED_YIELD: usize = 124;
 const SYSCALL_SCHED_PRIO_MAX: usize = 125;
 const SYSCALL_SCHED_PRIO_MIN: usize = 126;
 const SYSCALL_SCHED_RR_INTERVAL: usize = 127;
-const SYSCALL_MLOCKALL: usize = 151;
-const SYSCALL_MUNLOCKALL: usize = 152;
+const SYSCALL_MLOCK: usize = 228;
+const SYSCALL_MUNLOCK: usize = 229;
+const SYSCALL_MLOCKALL: usize = 230;
+const SYSCALL_MUNLOCKALL: usize = 231;
 const SYSCALL_KILL: usize = 129;
 const SYSCALL_GET_TIME: usize = 169;
 const SYSCALL_BRK: usize = 214;
@@ -102,6 +106,9 @@ pub static LAST_SYSCALL: core::sync::atomic::AtomicUsize =
 
 pub fn syscall(syscall_id: usize, args: [usize; 5]) -> isize {
     LAST_SYSCALL.store(syscall_id, core::sync::atomic::Ordering::Relaxed);
+    if (118..=127).contains(&syscall_id) {
+        println!("[schedcall] id={} a0={:#x} a1={:#x} a2={:#x}", syscall_id, args[0], args[1], args[2]);
+    }
     match syscall_id {
         SYSCALL_FCNTL => sys_fcntl(args[0], args[1], args[2]),
         SYSCALL_UTIMENSAT => 0,
@@ -148,12 +155,14 @@ pub fn syscall(syscall_id: usize, args: [usize; 5]) -> isize {
         SYSCALL_SETITIMER => signal::sys_setitimer(args[0], args[1] as *const u8, args[2] as *mut u8),
         SYSCALL_RT_SIGRETURN => signal::sys_rt_sigreturn(),
         SYSCALL_CLOCK_GETTIME => sys_clock_gettime(args[1] as *mut u8),
+        SYSCALL_CLOCK_GETRES => sys_clock_getres(args[1] as *mut u8),
+        SYSCALL_CLOCK_NANOSLEEP => sys_clock_nanosleep(args[2] as *const u8),
         SYSCALL_TIMES => sys_times(args[0] as *mut u8),
         SYSCALL_UNAME => sys_uname(args[0] as *mut u8),
         SYSCALL_YIELD => sys_yield(),
         SYSCALL_KILL => sys_kill(args[0], args[1] as u32),
         SYSCALL_SCHED_SETPARAM | SYSCALL_SCHED_SETSCHEDULER | SYSCALL_SCHED_SETAFFINITY
-        | SYSCALL_MLOCKALL | SYSCALL_MUNLOCKALL => 0,
+        | SYSCALL_MLOCK | SYSCALL_MUNLOCK | SYSCALL_MLOCKALL | SYSCALL_MUNLOCKALL => 0,
         SYSCALL_SCHED_GETSCHEDULER => 0,
         SYSCALL_SCHED_GETAFFINITY => sys_sched_getaffinity(args[1], args[2] as *mut u8),
         SYSCALL_SCHED_GETPARAM => sys_sched_getparam(args[1] as *mut u8),

@@ -269,6 +269,7 @@ pub fn sys_munmap() -> isize {
 
 /// sched_getparam(123)：写一个 4 字节的 sched_priority
 pub fn sys_sched_getparam(param: *mut u8) -> isize {
+    println!("[getparam] ptr={:#x}", param as usize);
     if param.is_null() {
         return -22;
     }

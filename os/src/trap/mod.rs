@@ -43,15 +43,6 @@ pub fn trap_handler() -> ! {
     set_kernel_trap_entry();
     let scause = scause::read();
     let stval = stval::read();
-    {
-        let tid = crate::task::current_task()
-            .map(|t| { let ti = t.inner_exclusive_access(); ti.res.as_ref().map(|r| r.tid).unwrap_or(0) })
-            .unwrap_or(0);
-        if tid > 0 {
-            let cx = current_trap_cx();
-            println!("[dbg] tid={} tp={:#x} sp={:#x} pc={:#x}", tid, cx.x[4], cx.x[2], cx.sepc);
-        }
-    }
     match scause.cause() {
         Trap::Exception(Exception::UserEnvCall) => {
             // jump to next instruction anyway

@@ -158,3 +158,31 @@ pub fn sys_clock_gettime(tp: *mut u8) -> isize {
     *crate::mm::translated_refmut(token, (tp as usize + 8) as *mut usize) = nsec;
     0
 }
+
+/// clock_getres(114)：报告 1ns 分辨率
+pub fn sys_clock_getres(ts: *mut u8) -> isize {
+    if ts.is_null() {
+        return 0;
+    }
+    let token = crate::task::current_user_token();
+    for i in 0..8 {
+        *crate::mm::translated_refmut(token, (ts as usize + i) as *mut u8) = 0;
+    }
+    *crate::mm::translated_refmut(token, (ts as usize + 8) as *mut u64) = 1;
+    0
+}
+
+/// clock_nanosleep(115)：用轮询定时器实现
+pub fn sys_clock_nanosleep(req: *const u8) -> isize {
+    if req.is_null() {
+        return -22;
+    }
+    let token = crate::task::current_user_token();
+    let sec = unsafe { *crate::mm::translated_ref(token, req as *const u64) } as usize;
+    let nsec = unsafe { *crate::mm::translated_ref(token, (req as usize + 8) as *const u64) } as usize;
+    let deadline = crate::timer::get_time_ms() + sec * 1000 + (nsec + 999_999) / 1_000_000;
+    while crate::timer::get_time_ms() < deadline {
+        crate::task::suspend_current_and_run_next();
+    }
+    0
+}
