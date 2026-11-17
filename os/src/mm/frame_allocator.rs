@@ -104,10 +104,8 @@ pub fn init_frame_allocator() {
 }
 
 pub fn frame_alloc() -> Option<FrameTracker> {
-    FRAME_ALLOCATOR
-        .exclusive_access()
-        .alloc()
-        .map(FrameTracker::new)
+    let r = FRAME_ALLOCATOR.exclusive_access().alloc();
+    r.map(FrameTracker::new)
 }
 
 pub fn frame_dealloc(ppn: PhysPageNum) {
@@ -130,4 +128,10 @@ pub fn frame_allocator_test() {
     }
     drop(v);
     println!("frame_allocator_test passed!");
+}
+
+/// 剩余可用页数（调试用）
+pub fn free_pages() -> usize {
+    let a = FRAME_ALLOCATOR.exclusive_access();
+    a.end - a.current
 }
