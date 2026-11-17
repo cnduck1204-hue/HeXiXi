@@ -379,6 +379,11 @@ pub fn is_dir_path(name: &str) -> bool {
     if name == "proc" || name == "dev" {
         return true;
     }
+    // 性能：overlay 里有的文件直接是普通文件，不要再去 EXT4 目录里查
+    // （EXT4 miss 在 QEMU 下要读好几个块，stat 一次能慢到 2ms，直接把 lmbench 拖死）
+    if overlay_get(name).is_some() {
+        return false;
+    }
     if let Some(fs) = EXT4.as_ref() {
         return fs.lookup(name).map(|i| i.is_dir()).unwrap_or(false);
     }
