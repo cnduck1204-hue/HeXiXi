@@ -97,7 +97,11 @@ pub fn exit_current_and_run_next(exit_code: i32) {
         // libc-test 的 runtest 在 fork 之后用 sigtimedwait(SIGCHLD) 等子进程结束，
         // 不投递的话每次测试都要空等 5s 超时。
         if let Some(parent) = process_inner.parent.as_ref().and_then(|p| p.upgrade()) {
-            parent.inner_exclusive_access().signals |= SignalFlags::SIGCHLD;
+            let mut pin = parent.inner_exclusive_access();
+            pin.signals |= SignalFlags::SIGCHLD;
+            // 除了给 sigtimedwait 留 pending 位，还要能真正跳进用户的 SIGCHLD handler
+            // （lmbench 的 benchmp 依赖 SIGCHLD handler 感知子进程死亡）
+            pin.sigchld_pending = true;
         }
 
         {

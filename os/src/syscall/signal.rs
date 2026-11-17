@@ -9,6 +9,8 @@ pub const SIGSTUB_VA: usize = 0x00FF_E000;
 pub const SIGCTX_VA: usize = 0x00FF_F000;
 /// 信号编号：SIGALRM
 pub const SIGALRM: usize = 14;
+/// 信号编号：SIGCHLD
+pub const SIGCHLD: usize = 17;
 
 /// 在用户地址空间建立信号所需的两页（exec 时调用）
 pub fn setup_signal_pages(memory_set: &mut MemorySet) {
@@ -49,18 +51,20 @@ pub fn sys_setitimer(which: usize, new: *const u8, _old: *mut u8) -> isize {
     0
 }
 
-/// rt_sigaction(134)：记录 SIGALRM 的 handler
+/// rt_sigaction(134)：记录 SIGALRM / SIGCHLD 的 handler
 pub fn sys_rt_sigaction(signo: usize, act: *const u8, _old: *mut u8) -> isize {
-    if signo != SIGALRM {
-        return 0;
-    }
     if act.is_null() {
         return 0;
     }
     let token = current_user_token();
+    // struct sigaction 第一个字段就是 handler 地址（0=SIG_DFL, 1=SIG_IGN）
     let handler = *translated_ref(token, act as *const usize);
     let process = current_process();
-    process.inner_exclusive_access().sigalrm_handler = handler;
+    match signo {
+        SIGALRM => process.inner_exclusive_access().sigalrm_handler = handler,
+        SIGCHLD => process.inner_exclusive_access().sigchld_handler = handler,
+        _ => {}
+    }
     0
 }
 
@@ -96,18 +100,41 @@ pub fn alarm_interrupts() -> bool {
     current_process().inner_exclusive_access().sigalrm_pending
 }
 
-/// 返回用户态前调用：若有待投递的 SIGALRM，改成跳到 handler
+/// 返回用户态前调用：把待投递的 SIGALRM / SIGCHLD 变成“跳到用户 handler”。
+/// 一次只投递一个（不嵌套）；handler 里的 rt_sigreturn 会把现场恢复，
+/// 之后的下一次 trap 再投剩下的 pending。
 pub fn deliver_signal() {
     let process = current_process();
-    let (handler, pending, in_handler) = {
+    let (alarm_handler, alarm_pending, chld_handler, chld_pending, in_handler) = {
         let inner = process.inner_exclusive_access();
-        (inner.sigalrm_handler, inner.sigalrm_pending, inner.in_sigalrm)
+        (
+            inner.sigalrm_handler,
+            inner.sigalrm_pending,
+            inner.sigchld_handler,
+            inner.sigchld_pending,
+            inner.in_sigalrm,
+        )
     };
-    if !pending || handler == 0 || handler == 1 || in_handler {
-        let mut inner = process.inner_exclusive_access();
-        inner.sigalrm_pending = false;
+    // 正在 handler 里：不嵌套，等 rt_sigreturn 之后再投
+    if in_handler {
         return;
     }
+    // 选一个可投递的信号
+    let (handler, signo, is_alarm) = if alarm_pending && alarm_handler > 1 {
+        (alarm_handler, SIGALRM, true)
+    } else if chld_pending && chld_handler > 1 {
+        (chld_handler, SIGCHLD, false)
+    } else {
+        // 没有可调用的 handler（SIG_DFL / SIG_IGN / 未注册）：直接清 pending
+        let mut inner = process.inner_exclusive_access();
+        if alarm_pending {
+            inner.sigalrm_pending = false;
+        }
+        if chld_pending {
+            inner.sigchld_pending = false;
+        }
+        return;
+    };
     let token = current_user_token();
     let cx = crate::task::current_trap_cx();
     // 保存当前上下文
@@ -121,9 +148,13 @@ pub fn deliver_signal() {
     // 构造调用 handler 的上下文
     cx.sepc = handler;
     cx.x[1] = SIGSTUB_VA;
-    cx.x[10] = SIGALRM;
+    cx.x[10] = signo;
     cx.x[2] = cx.x[2].saturating_sub(512) & !0xf;
     let mut inner = process.inner_exclusive_access();
-    inner.sigalrm_pending = false;
+    if is_alarm {
+        inner.sigalrm_pending = false;
+    } else {
+        inner.sigchld_pending = false;
+    }
     inner.in_sigalrm = true;
 }

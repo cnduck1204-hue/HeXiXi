@@ -199,9 +199,9 @@ pub fn syscall(syscall_id: usize, args: [usize; 5]) -> isize {
         SYSCALL_SETPGID => 0,
         SYSCALL_GETPGID | SYSCALL_GETSID => sys_getpid(),
         // pthread_cancel 走 tkill/tgkill 发 SIGCANCEL；按“给本进程投递信号”处理
-        SYSCALL_TKILL => sys_kill(args[0], args[1] as u32),
-        SYSCALL_TGKILL => sys_kill(args[0], args[2] as u32),
-        SYSCALL_RT_TGSIGQUEUEINFO => sys_kill(args[0], args[1] as u32),
+        SYSCALL_TKILL => sys_thread_kill(args[1] as u32),
+        SYSCALL_TGKILL => sys_thread_kill(args[2] as u32),
+        SYSCALL_RT_TGSIGQUEUEINFO => sys_thread_kill(args[2] as u32),
         SYSCALL_SENDFILE => sys_sendfile(args[0], args[1], args[3]),
         SYSCALL_NEWFSTATAT => sys_newfstatat(args[1] as *const u8, args[2] as *mut u8),
         SYSCALL_FSYNC | SYSCALL_FDATASYNC => 0,

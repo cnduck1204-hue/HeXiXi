@@ -189,6 +189,11 @@ pub fn sys_times(buf: *mut u8) -> isize {
     (crate::timer::get_time_ms() / 10) as isize
 }
 
+/// kill(2)。注意：**目标不存在（已退出/僵尸进程）时绝不能把信号投给自己**。
+/// 之前这里有一个“找不到 pid 就投给当前进程”的兜底（本来是为 pthread_kill 写的），
+/// 结果 busybox 脚本 `kill -9 $stale_pid`、lmbench 的 `kill(benchmp_sigalrm_pid, SIGTERM)`
+/// 会把调用者自己杀掉 —— 表现为 shell 半路消失 / benchmp 自己收到 SIGTERM。
+/// tkill/tgkill 走 sys_thread_kill。
 pub fn sys_kill(pid: usize, signal: u32) -> isize {
     // 实时信号/线程取消信号（>=32）用 bitflags 表示不了，直接按成功放过
     if signal >= 32 {
@@ -197,19 +202,36 @@ pub fn sys_kill(pid: usize, signal: u32) -> isize {
     if signal == 0 {
         return 0;
     }
-    // SignalFlags 用“bit 位置 = 信号号”编码，这里必须把信号号左移
     let flag = match SignalFlags::from_bits(1u32 << signal) {
         Some(f) => f,
         None => return -22,
     };
-    if let Some(process) = pid2process(pid) {
-        process.inner_exclusive_access().signals |= flag;
+    if pid == 0 {
+        // kill(0) 语义上是发给自己所在进程组（这里就是自己）
+        current_process().inner_exclusive_access().signals |= flag;
         return 0;
     }
-    // pthread_kill(tid) / tkill：tid 不是 pid。本内核的线程信号统一投递给整个进程，
-    // 找不到对应 pid 时就挂到当前进程上，避免 pthread_cancel 拿到 ESRCH/EPERM。
-    let process = current_process();
-    process.inner_exclusive_access().signals |= flag;
+    if let Some(process) = pid2process(pid) {
+        process.inner_exclusive_access().signals |= flag;
+    }
+    // 目标不存在：按成功返回（测试脚本常见“kill 一个已退出的后台进程”）
+    0
+}
+
+/// tkill / tgkill / rt_tgsigqueueinfo：参数是 tid，不是 pid。
+/// 本内核的线程信号统一投递给整个进程（pthread_cancel 依赖这条路径）。
+pub fn sys_thread_kill(signal: u32) -> isize {
+    if signal >= 32 {
+        return 0;
+    }
+    if signal == 0 {
+        return 0;
+    }
+    let flag = match SignalFlags::from_bits(1u32 << signal) {
+        Some(f) => f,
+        None => return -22,
+    };
+    current_process().inner_exclusive_access().signals |= flag;
     0
 }
 
