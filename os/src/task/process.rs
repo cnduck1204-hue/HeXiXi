@@ -53,6 +53,8 @@ pub struct ProcessControlBlockInner {
     pub sigalrm_pending: bool,
     /// 正在执行 SIGALRM handler（避免重入）
     pub in_sigalrm: bool,
+    /// RLIMIT_NOFILE 的当前上限（fd 表硬上限；setrlimit/prlimit64 会改）
+    pub nofile_limit: usize,
 }
 
 impl ProcessControlBlockInner {
@@ -61,12 +63,15 @@ impl ProcessControlBlockInner {
         self.memory_set.token()
     }
 
-    pub fn alloc_fd(&mut self) -> usize {
+    /// 分配一个 fd；已到 RLIMIT_NOFILE 上限时返回 None（调用方返回 EMFILE）
+    pub fn alloc_fd(&mut self) -> Option<usize> {
         if let Some(fd) = (0..self.fd_table.len()).find(|fd| self.fd_table[*fd].is_none()) {
-            fd
-        } else {
+            Some(fd)
+        } else if self.fd_table.len() < self.nofile_limit {
             self.fd_table.push(None);
-            self.fd_table.len() - 1
+            Some(self.fd_table.len() - 1)
+        } else {
+            None
         }
     }
 
@@ -135,6 +140,7 @@ impl ProcessControlBlock {
                     sigalrm_handler: 0,
                     sigalrm_pending: false,
                     in_sigalrm: false,
+                    nofile_limit: 1024,
                 })
             },
         });
@@ -322,6 +328,7 @@ impl ProcessControlBlock {
                     sigalrm_handler: 0,
                     sigalrm_pending: false,
                     in_sigalrm: false,
+                    nofile_limit: 1024,
                 })
             },
         });
@@ -332,6 +339,7 @@ impl ProcessControlBlock {
             ci.brk_base = parent.brk_base;
             ci.brk = parent.brk;
             ci.mmap_top = parent.mmap_top;
+            ci.nofile_limit = parent.nofile_limit;
         }
         // add child
         parent.children.push(Arc::clone(&child));

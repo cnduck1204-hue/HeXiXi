@@ -28,7 +28,10 @@ impl Pipe {
     }
 }
 
-const RING_BUFFER_SIZE: usize = 65536;
+/// 环形缓冲大小。原本 64KB（Linux 默认 pipe capacity），但 LTP 的 pipe06 会一路 open
+/// 到 EMFILE（1024 个 fd ≈ 512 个 pipe），64KB × 512 = 32MB，再加上别的堆占用
+/// 会把 64MB 内核堆打爆。降到 16KB：仍 >= PIPE_BUF(4096)，LTP 的 pipe 用例够用。
+const RING_BUFFER_SIZE: usize = 16384;
 
 #[derive(Copy, Clone, PartialEq)]
 enum RingBufferStatus {

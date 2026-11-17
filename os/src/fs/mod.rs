@@ -81,6 +81,55 @@ pub fn overlay_remove(name: &str) {
     OVERLAY.exclusive_access().remove(name);
 }
 
+/// /dev/null：读永远 EOF，写直接丢弃
+pub struct NullFile;
+
+impl File for NullFile {
+    fn readable(&self) -> bool {
+        true
+    }
+    fn writable(&self) -> bool {
+        true
+    }
+    fn read(&self, _buf: UserBuffer) -> usize {
+        0
+    }
+    fn write(&self, buf: UserBuffer) -> usize {
+        buf.len()
+    }
+    fn poll_readable(&self) -> bool {
+        true
+    }
+    fn poll_writable(&self) -> bool {
+        true
+    }
+}
+
+/// /dev/zero：读返回全 0，写丢弃
+pub struct ZeroFile;
+
+impl File for ZeroFile {
+    fn readable(&self) -> bool {
+        true
+    }
+    fn writable(&self) -> bool {
+        true
+    }
+    fn read(&self, buf: UserBuffer) -> usize {
+        let mut n = 0usize;
+        for ptr in buf {
+            unsafe {
+                *ptr = 0;
+            }
+            n += 1;
+        }
+        n
+    }
+    fn write(&self, buf: UserBuffer) -> usize {
+        buf.len()
+    }
+}
+
 pub struct OverlayFile {
     data: OverlayData,
     offset: crate::sync::UPSafeCell<usize>,
@@ -196,6 +245,14 @@ fn read_file_all_inner(name: &str) -> Option<Vec<u8>> {
 
 /// 打开文件并返回统一的 File 对象（供系统调用使用）
 pub fn open_dyn(name: &str, flags: OpenFlags) -> Option<Arc<dyn File + Send + Sync>> {
+    // 虚拟设备文件：/dev/null 这类被 lmbench / 测试大量使用，原来 ENOENT
+    let dev = name.trim_start_matches("./").trim_start_matches('/');
+    match dev {
+        "dev/null" => return Some(Arc::new(NullFile)),
+        "dev/zero" => return Some(Arc::new(ZeroFile)),
+        "dev/tty" | "dev/console" => return Some(Arc::new(Stdout)),
+        _ => {}
+    }
     if let Some(v) = virtual_file(name) {
         let d = overlay_create(name);
         *d.exclusive_access() = v;
@@ -319,7 +376,7 @@ pub fn is_dir_path(name: &str) -> bool {
     if name.is_empty() || name == "." {
         return true;
     }
-    if name == "proc" {
+    if name == "proc" || name == "dev" {
         return true;
     }
     if let Some(fs) = EXT4.as_ref() {
@@ -331,6 +388,13 @@ pub fn is_dir_path(name: &str) -> bool {
 /// 列出某个目录下的条目（名字, inode, 类型）
 pub fn list_dir_path(name: &str) -> Vec<(String, u32, u8)> {
     let name = name.trim_start_matches("./").trim_start_matches('/');
+    if name == "dev" {
+        return alloc::vec![
+            (String::from("null"), 301u32, 1u8),
+            (String::from("zero"), 302u32, 1u8),
+            (String::from("tty"), 303u32, 1u8),
+        ];
+    }
     if name == "proc" {
         let mut v: Vec<(String, u32, u8)> = PROC_FILES
             .iter()

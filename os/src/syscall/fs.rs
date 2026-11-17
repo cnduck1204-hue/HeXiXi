@@ -49,7 +49,10 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
     let path = translated_str(token, path);
     if let Some(inode) = crate::fs::open_dyn(path.as_str(), OpenFlags::from_bits(flags).unwrap()) {
         let mut inner = process.inner_exclusive_access();
-        let fd = inner.alloc_fd();
+        let fd = match inner.alloc_fd() {
+            Some(fd) => fd,
+            None => return -24, // EMFILE
+        };
         inner.fd_table[fd] = Some(inode);
         fd as isize
     } else {
@@ -75,9 +78,15 @@ pub fn sys_pipe(pipe: *mut usize) -> isize {
     let token = current_user_token();
     let mut inner = process.inner_exclusive_access();
     let (pipe_read, pipe_write) = make_pipe();
-    let read_fd = inner.alloc_fd();
+    let read_fd = match inner.alloc_fd() {
+        Some(fd) => fd,
+        None => return -24, // EMFILE
+    };
     inner.fd_table[read_fd] = Some(pipe_read);
-    let write_fd = inner.alloc_fd();
+    let write_fd = match inner.alloc_fd() {
+        Some(fd) => fd,
+        None => return -24, // EMFILE
+    };
     inner.fd_table[write_fd] = Some(pipe_write);
     // Linux 的 pipe(int fd[2]) 是 4 字节 int，按 4 字节写入
     *translated_refmut(token, pipe as *mut i32) = read_fd as i32;
@@ -94,7 +103,10 @@ pub fn sys_dup(fd: usize) -> isize {
     if inner.fd_table[fd].is_none() {
         return -1;
     }
-    let new_fd = inner.alloc_fd();
+    let new_fd = match inner.alloc_fd() {
+        Some(fd) => fd,
+        None => return -24, // EMFILE
+    };
     inner.fd_table[new_fd] = Some(Arc::clone(inner.fd_table[fd].as_ref().unwrap()));
     new_fd as isize
 }
@@ -156,7 +168,10 @@ pub fn sys_openat(_dirfd: isize, path: *const u8, flags: u32, _mode: u32) -> isi
     if let Some(inode) = crate::fs::open_dyn(path.as_str(), of) {
         let process = current_process();
         let mut inner = process.inner_exclusive_access();
-        let fd = inner.alloc_fd();
+        let fd = match inner.alloc_fd() {
+            Some(fd) => fd,
+            None => return -24, // EMFILE
+        };
         inner.fd_table[fd] = Some(inode);
         if crate::fs::is_dir_path(path.as_str()) {
             inner.dir_paths.insert(fd, path.clone());
@@ -389,11 +404,17 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> isize {
             };
             let mut new_fd = arg;
             while inner.fd_table.len() <= new_fd {
+                if inner.fd_table.len() >= inner.nofile_limit {
+                    return -24; // EMFILE
+                }
                 inner.fd_table.push(None);
             }
             while inner.fd_table[new_fd].is_some() {
                 new_fd += 1;
                 if inner.fd_table.len() <= new_fd {
+                    if inner.fd_table.len() >= inner.nofile_limit {
+                        return -24; // EMFILE
+                    }
                     inner.fd_table.push(None);
                 }
             }
@@ -420,6 +441,20 @@ pub fn sys_ppoll(fds: *mut u8, nfds: usize) -> isize {
 /// sendfile(71)：暂不支持，返回 ENOSYS（busybox 会自动回退到 read/write）
 pub fn sys_sendfile(_in_fd: usize, _out_fd: usize, _count: usize) -> isize {
     -38
+}
+
+/// utimensat(88)：时间戳先不真正实现，但必须补上 "touch" 的文件创建语义。
+/// busybox touch 先调 utimensat，我们原来直接返回 0，它就不会创建文件，
+/// 后面 lmbench 打开 /var/tmp/lmbench 全是 EPERM。
+pub fn sys_utimensat(path: *const u8) -> isize {
+    let token = current_user_token();
+    let raw = translated_str(token, path);
+    let p = crate::fs::resolve_path(&raw);
+    if crate::fs::exists(&p) {
+        return 0;
+    }
+    crate::fs::overlay_create(&p);
+    0
 }
 
 /// statfs(43)/fstatfs(44)：返回最小的 ext4 统计信息

@@ -157,7 +157,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 5]) -> isize {
     }
     match syscall_id {
         SYSCALL_FCNTL => sys_fcntl(args[0], args[1], args[2]),
-        SYSCALL_UTIMENSAT => 0,
+        SYSCALL_UTIMENSAT => sys_utimensat(args[1] as *const u8),
         SYSCALL_RENAMEAT => sys_renameat(args[1] as *const u8, args[3] as *const u8),
         SYSCALL_RENAMEAT2 => sys_renameat(args[1] as *const u8, args[3] as *const u8),
         SYSCALL_STATFS | SYSCALL_FSTATFS => sys_statfs(args[1] as *mut u8),
@@ -186,8 +186,10 @@ pub fn syscall(syscall_id: usize, args: [usize; 5]) -> isize {
             args[2] as *const u8,
         ),
         SYSCALL_GETRLIMIT => sys_getrlimit(args[0], args[1] as *mut u8),
-        SYSCALL_SETRLIMIT => 0,
-        SYSCALL_PRLIMIT64 => sys_prlimit64(args[0], args[1], args[3] as *mut u8),
+        SYSCALL_SETRLIMIT => sys_setrlimit(args[0], args[1] as *const u8),
+        SYSCALL_PRLIMIT64 => {
+            sys_prlimit64(args[0], args[1], args[2] as *const u8, args[3] as *mut u8)
+        }
         SYSCALL_UMASK | SYSCALL_PRCTL | SYSCALL_GETCPU => 0,
         // LTP 每个用例 setup 都会 chown 临时目录、access 文件，全部按成功处理，
         // 否则 162 个用例全部 TBROK 在 setup 阶段。

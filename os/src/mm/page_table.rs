@@ -149,12 +149,47 @@ fn dummy_user_page() -> *mut u8 {
     unsafe { core::ptr::addr_of_mut!(DUMMY_USER_PAGE) as *mut u8 }
 }
 
+/// 物理地址是否像“正常的用户页帧”：落在 [ekernel, ram_end) 内。
+/// 之前 getcwd01 的内核 panic 就是 translate 出来 0x80201xxx（内核 .text 区）直接写崩的。
+fn phys_addr_sane(pa: usize) -> bool {
+    extern "C" {
+        fn ekernel();
+    }
+    let start = ekernel as usize;
+    let end = crate::mm::ram_end();
+    pa >= start && pa < end
+}
+
+/// 发现异常页表项时打印一次现场（诊断用），然后调用方退回哑页
+fn dummy_warned() -> bool {
+    use core::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    WARNED.swap(true, Ordering::Relaxed)
+}
+
+fn report_bad_translation(token: usize, va: usize, pa: usize) {
+    println!(
+        "[bad-pte] pid={} va={:#x} pa={:#x} root_ppn={:#x} token={:#x} last_sys={}",
+        crate::task::current_task()
+            .map(|t| t.process.upgrade().map(|p| p.getpid()).unwrap_or(0))
+            .unwrap_or(0),
+        va,
+        pa,
+        token & ((1usize << 44) - 1),
+        token,
+        crate::syscall::LAST_SYSCALL.load(core::sync::atomic::Ordering::Relaxed)
+    );
+}
+
 fn ensure_user_page_mapped(token: usize, va: usize) -> bool {
     let vpn = VirtAddr::from(va).floor();
-    // 快路径：已经有有效 PTE 就不需要动进程锁
+    // 快路径：必须是“带 U 位的有效 PTE”。
+    // 注意用户页表里还映射了 trampoline（vpn 0x7FFFFFFFF，只有 R|X 没有 U），
+    // 用户传 buf=(void*)-1 时 VirtAddr 掩码后会正好命中它，
+    // 不判 U 位就会把 trampoline 的物理地址（内核 .text）当用户缓冲区写 → 内核崩。
     let mapped = PageTable::from_token(token)
         .translate(vpn)
-        .map(|pte| pte.is_valid())
+        .map(|pte| pte.is_valid() && pte.flags().contains(PTEFlags::U))
         .unwrap_or(false);
     if mapped {
         return true;
@@ -193,6 +228,15 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
             continue;
         }
         let ppn = page_table.translate(start_va.floor()).unwrap().ppn();
+        if !phys_addr_sane(usize::from(ppn) << 12) && !dummy_warned() {
+            report_bad_translation(token, start, usize::from(ppn) << 12);
+            let n = if page_end > start { page_end - start } else { 0 };
+            if n > 0 {
+                v.push(unsafe { core::slice::from_raw_parts_mut(dummy_user_page(), n) });
+            }
+            start = page_end;
+            continue;
+        }
         if end_va.page_offset() == 0 {
             v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..]);
         } else {
@@ -241,10 +285,14 @@ pub fn translated_ref<T>(token: usize, ptr: *const T) -> &'static T {
         return unsafe { &*(dummy_user_page() as *const T) };
     }
     let page_table = PageTable::from_token(token);
-    page_table
-        .translate_va(VirtAddr::from(va))
-        .unwrap()
-        .get_ref()
+    let pa = page_table.translate_va(VirtAddr::from(va)).unwrap();
+    if !phys_addr_sane(usize::from(pa)) {
+        if !dummy_warned() {
+            report_bad_translation(token, va, usize::from(pa));
+        }
+        return unsafe { &*(dummy_user_page() as *const T) };
+    }
+    pa.get_ref()
 }
 
 pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
@@ -253,10 +301,14 @@ pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
         return unsafe { &mut *(dummy_user_page() as *mut T) };
     }
     let page_table = PageTable::from_token(token);
-    page_table
-        .translate_va(VirtAddr::from(va))
-        .unwrap()
-        .get_mut()
+    let pa = page_table.translate_va(VirtAddr::from(va)).unwrap();
+    if !phys_addr_sane(usize::from(pa)) {
+        if !dummy_warned() {
+            report_bad_translation(token, va, usize::from(pa));
+        }
+        return unsafe { &mut *(dummy_user_page() as *mut T) };
+    }
+    pa.get_mut()
 }
 
 pub struct UserBuffer {

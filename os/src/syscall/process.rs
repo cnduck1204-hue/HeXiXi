@@ -513,33 +513,67 @@ pub fn sys_rt_sigtimedwait(set: *const u8, info: *mut u8, timeout: *const u8) ->
     }
 }
 
-fn fill_rlimit(token: usize, ptr: *mut u8, resource: usize) {
-    let (cur, max): (usize, usize) = match resource {
+/// 当前进程对某个 resource 的 (rlim_cur, rlim_max)
+fn current_rlimit(resource: usize) -> (usize, usize) {
+    match resource {
         3 => (8 * 1024 * 1024, 8 * 1024 * 1024), // RLIMIT_STACK
         4 => (8 * 1024 * 1024, 8 * 1024 * 1024), // RLIMIT_CORE
-        7 => (1024, 1024),                       // RLIMIT_NOFILE
+        7 => {
+            // RLIMIT_NOFILE：真正生效，限制 fd 表长度
+            let limit = current_process().inner_exclusive_access().nofile_limit;
+            (limit, limit)
+        }
         _ => (usize::MAX, usize::MAX),
-    };
+    }
+}
+
+fn write_rlimit(token: usize, ptr: *mut u8, cur: usize, max: usize) {
     *translated_refmut(token, ptr as *mut usize) = cur;
     *translated_refmut(token, (ptr as usize + 8) as *mut usize) = max;
 }
 
-/// getrlimit(163)：返回一组固定的宽松限制（libc-test 的 rlimit 用例需要）
+/// 应用一个 RLIMIT_NOFILE 设置（夹到 [16, 65536]，避免把 busybox 之类直接卡死）
+fn apply_nofile(cur: usize) {
+    let v = cur.clamp(16, 65536);
+    current_process().inner_exclusive_access().nofile_limit = v;
+}
+
+/// getrlimit(163)
 pub fn sys_getrlimit(resource: usize, ptr: *mut u8) -> isize {
     if ptr.is_null() {
         return -14;
     }
     let token = current_user_token();
-    fill_rlimit(token, ptr, resource);
+    let (cur, max) = current_rlimit(resource);
+    write_rlimit(token, ptr, cur, max);
     0
 }
 
-/// prlimit64(261)：只支持查询 old，new 一律忽略
-pub fn sys_prlimit64(_pid: usize, resource: usize, old: *mut u8) -> isize {
-    if old.is_null() {
-        return 0;
+/// setrlimit(164)：目前只真正实现 RLIMIT_NOFILE，其它 resource 接受即成功
+pub fn sys_setrlimit(resource: usize, ptr: *const u8) -> isize {
+    if ptr.is_null() {
+        return -14;
     }
     let token = current_user_token();
-    fill_rlimit(token, old, resource);
+    let cur = unsafe { *translated_ref(token, ptr as *const usize) } as usize;
+    if resource == 7 {
+        apply_nofile(cur);
+    }
+    0
+}
+
+/// prlimit64(261)：new != NULL 时应用，old != NULL 时回填
+pub fn sys_prlimit64(_pid: usize, resource: usize, new: *const u8, old: *mut u8) -> isize {
+    let token = current_user_token();
+    if !new.is_null() {
+        let cur = unsafe { *translated_ref(token, new as *const usize) } as usize;
+        if resource == 7 {
+            apply_nofile(cur);
+        }
+    }
+    if !old.is_null() {
+        let (cur, max) = current_rlimit(resource);
+        write_rlimit(token, old, cur, max);
+    }
     0
 }
