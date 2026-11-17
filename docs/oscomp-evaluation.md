@@ -36,7 +36,10 @@ ELF 和 `xxx_testcode.sh` 脚本。内核需要在启动后：
 | lua 组 | ✅ **9/9 全通过**（runner 直接驱动 lua 解释器） |
 | busybox 组 | ✅ 55 条命令中 **49 条成功**（剩 df/dmesg/ps/hwclock/which/后台 kill） |
 | libcbench 组 | ⚠️ 能启动并输出标记，但 fork 出的子进程写栈缺页、多次 fork 后帧耗尽 |
-| libc-test / iozone / lmbench / iperf / cyclictest / ltp / netperf | ❌ 未测 |
+| libc-test / ltp / iperf / netperf | ❌ 未测（iperf/netperf 依赖网卡，预期不可行） |
+| cyclictest | ⚠️ 空载 2 个用例 success；hackbench 压力阶段在单核抢占下过慢、超时 |
+| libcbench | ⚠️ 16 个 benchmark 有结果，卡在 2500 次 pthread create/join 循环 |
+| lmbench | ⚠️ libtirpc 已能交叉构建；`lmbench_all` 还缺各子基准的 `*_main` 符号，未完成 |
 | unixbench | ⚠️ 可产出 11–17 行结果（DHRY2/SYSCALL/CONTEXT/PIPE/SPAWN/9×fstime/3×SHELL），
 但组尾会出现内核 panic（processor.rs / address.rs），且 FS_READ/COPY 测得 0 KBps |
 | 信号支持 | ✅ `setitimer(103)` + `rt_sigaction(134)` + `rt_sigreturn(139)`，SIGALRM 可正常投递 |
