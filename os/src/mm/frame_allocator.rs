@@ -1,5 +1,17 @@
 use super::{PhysAddr, PhysPageNum};
 use crate::config::MEMORY_END;
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+/// 实际可用的物理内存末尾（由 DTB 动态探测，缺省用配置值）
+static RAM_END: AtomicUsize = AtomicUsize::new(MEMORY_END);
+
+pub fn set_ram_end(v: usize) {
+    RAM_END.store(v, Ordering::Relaxed);
+}
+
+pub fn ram_end() -> usize {
+    RAM_END.load(Ordering::Relaxed)
+}
 use crate::sync::UPSafeCell;
 use alloc::vec::Vec;
 use core::fmt::{self, Debug, Formatter};
@@ -93,7 +105,7 @@ pub fn init_frame_allocator() {
         fn ekernel();
     }
     let start = PhysAddr::from(ekernel as usize).ceil();
-    let end = PhysAddr::from(MEMORY_END).floor();
+    let end = PhysAddr::from(ram_end()).floor();
     FRAME_ALLOCATOR.exclusive_access().init(start, end);
     println!(
         "[mm] frame allocator: {:#x}..{:#x} = {} pages",

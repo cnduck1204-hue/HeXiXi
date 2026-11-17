@@ -19,6 +19,7 @@ mod board;
 mod console;
 mod config;
 mod drivers;
+mod fdt;
 mod fs;
 mod lang_items;
 mod mm;
@@ -48,6 +49,15 @@ fn clear_bss() {
 pub fn rust_main() -> ! {
     clear_bss();
     println!("[kernel] Hello, world!");
+    match fdt::detect_ram_end() {
+        Some(end) => {
+            // 末尾留 1MB 余量，避免越过 RAM
+            let end = end.saturating_sub(0x10_0000);
+            mm::set_ram_end(end);
+            println!("[kernel] DTB memory end: {:#x}", end);
+        }
+        None => println!("[kernel] DTB memory: not found, using default"),
+    }
     mm::init();
     mm::remap_test();
     trap::init();
