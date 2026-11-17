@@ -104,7 +104,10 @@ pub fn init_frame_allocator() {
     extern "C" {
         fn ekernel();
     }
-    let start = PhysAddr::from(ekernel as usize).ceil();
+    // 内核堆是动态划出来的（在 ekernel 之后），帧分配器必须从堆末尾开始，
+    // 否则会把内核堆的物理页当空闲帧发出去。
+    let heap_end = super::heap_allocator::heap_end();
+    let start = PhysAddr::from(heap_end.max(ekernel as usize)).ceil();
     let end = PhysAddr::from(ram_end()).floor();
     FRAME_ALLOCATOR.exclusive_access().init(start, end);
     println!(

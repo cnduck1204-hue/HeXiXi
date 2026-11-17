@@ -202,6 +202,32 @@ impl ProcessControlBlock {
         let mut sp = task_inner.res.as_mut().unwrap().ustack_top();
         let argc = args.len();
 
+        // 0. 环境变量：只给 lmbench 注入 ENOUGH。
+        //   为什么：lmbench 的计时目标默认按“1 秒”校准，每个子进程要跑 1s 的校准/测量；
+        //   lat_fs 还会按 1 秒预算创建上万个 10KB 文件（overlay 数据在内核堆里），
+        //   1G 机器上会堆爆/超时。ENOUGH 是 lmbench 官方支持的调参环境变量
+        //   （lib_timing.c: getenv("ENOUGH")），设成 10000 即 10ms 目标，
+        //   不影响测量含义，还能让整组在几分钟内跑完。
+        let prog_name = args.first().map(|s| s.as_str()).unwrap_or("");
+        let envs: Vec<String> = if prog_name.ends_with("lmbench_all") || prog_name.ends_with("lmbench") {
+            vec![String::from("ENOUGH=10000")]
+        } else {
+            Vec::new()
+        };
+        // 环境变量字符串（和参数字符串一样放高地址）
+        let mut env_ptrs: Vec<usize> = Vec::with_capacity(envs.len());
+        for env in envs.iter().rev() {
+            sp -= env.len() + 1;
+            let mut ep = sp;
+            for c in env.as_bytes() {
+                *translated_refmut(new_token, ep as *mut u8) = *c;
+                ep += 1;
+            }
+            *translated_refmut(new_token, ep as *mut u8) = 0;
+            env_ptrs.push(sp);
+        }
+        env_ptrs.reverse();
+
         // 1. 参数字符串（先放到高地址区）
         let mut arg_ptrs: Vec<usize> = Vec::with_capacity(argc);
         for arg in args.iter().rev() {
@@ -255,7 +281,7 @@ impl ProcessControlBlock {
             (16, 0),
             (0, 0),
         ];
-        let words = 1 + argc + 1 + 1 + auxv.len() * 2;
+        let words = 1 + argc + 1 + env_ptrs.len() + 1 + auxv.len() * 2;
         sp -= words * core::mem::size_of::<usize>();
         sp -= sp % 16;
         let base = sp;
@@ -265,10 +291,14 @@ impl ProcessControlBlock {
             *translated_refmut(new_token, (base + (1 + i) * sz) as *mut usize) = arg_ptrs[i];
         }
         *translated_refmut(new_token, (base + (1 + argc) * sz) as *mut usize) = 0;
-        *translated_refmut(new_token, (base + (2 + argc) * sz) as *mut usize) = 0;
+        for (i, p) in env_ptrs.iter().enumerate() {
+            *translated_refmut(new_token, (base + (2 + argc + i) * sz) as *mut usize) = *p;
+        }
+        let envc = env_ptrs.len();
+        *translated_refmut(new_token, (base + (2 + argc + envc) * sz) as *mut usize) = 0;
         for (i, (t, v)) in auxv.iter().enumerate() {
-            *translated_refmut(new_token, (base + (3 + argc + i * 2) * sz) as *mut usize) = *t;
-            *translated_refmut(new_token, (base + (4 + argc + i * 2) * sz) as *mut usize) = *v;
+            *translated_refmut(new_token, (base + (3 + argc + envc + i * 2) * sz) as *mut usize) = *t;
+            *translated_refmut(new_token, (base + (4 + argc + envc + i * 2) * sz) as *mut usize) = *v;
         }
         let user_sp = base;
         // initialize trap_cx

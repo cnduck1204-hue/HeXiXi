@@ -203,6 +203,13 @@ impl File for OverlayFile {
         let mut data = self.data.exclusive_access();
         let mut off = self.offset.exclusive_access();
         let mut n = 0;
+        // 一次性 reserve 到“写完之后的大小”：Vec 的倍增策略会让每个 10KB 文件实占 16KB，
+        // lat_fs 一次创建上万个文件时这点放大就是几十 MB 的差距。
+        let total = buf.len();
+        if total > 0 && *off >= data.len() {
+            let need = (*off + total).min(MAX_OVERLAY).saturating_sub(data.len());
+            data.reserve(need);
+        }
         for ptr in buf {
             if *off >= MAX_OVERLAY {
                 // 假装写成功，实际丢弃
