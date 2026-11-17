@@ -261,8 +261,20 @@ pub fn sys_mmap(len: usize) -> isize {
     start as isize
 }
 
-/// munmap(215)：暂不真正回收
-pub fn sys_munmap() -> isize {
+/// munmap(215)：解除映射并回收帧（线程栈释放依赖它）
+pub fn sys_munmap(addr: usize, len: usize) -> isize {
+    if len == 0 {
+        return 0;
+    }
+    let process = current_process();
+    let mut inner = process.inner_exclusive_access();
+    let start = crate::mm::VirtAddr::from(addr).floor();
+    let end = crate::mm::VirtAddr::from(addr + len).ceil();
+    let mut vpn = start;
+    while vpn < end {
+        inner.memory_set.remove_area_with_start_vpn(vpn);
+        vpn = crate::mm::VirtPageNum(vpn.0 + 1);
+    }
     0
 }
 

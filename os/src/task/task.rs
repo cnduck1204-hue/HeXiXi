@@ -31,6 +31,8 @@ pub struct TaskControlBlockInner {
     pub task_cx: TaskContext,
     pub task_status: TaskStatus,
     pub exit_code: Option<i32>,
+    /// CLONE_CHILD_CLEARTID 的地址：线程退出时把它清零
+    pub clear_child_tid: usize,
 }
 
 impl TaskControlBlockInner {
@@ -67,6 +69,7 @@ impl TaskControlBlock {
                     task_cx: TaskContext::goto_trap_return(kstack_top),
                     task_status: TaskStatus::Ready,
                     exit_code: None,
+                    clear_child_tid: 0,
                 })
             },
         }
@@ -89,6 +92,7 @@ impl TaskControlBlock {
                     task_cx: TaskContext::goto_trap_return(kstack_top),
                     task_status: TaskStatus::Ready,
                     exit_code: None,
+                    clear_child_tid: 0,
                 })
             },
         }

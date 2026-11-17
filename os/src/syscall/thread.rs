@@ -20,7 +20,7 @@ pub fn sys_thread_create(entry: usize, arg: usize) -> isize {
     ));
     // add new task to scheduler
     add_task(Arc::clone(&new_task));
-    let new_task_inner = new_task.inner_exclusive_access();
+    let mut new_task_inner = new_task.inner_exclusive_access();
     let new_task_res = new_task_inner.res.as_ref().unwrap();
     let new_task_tid = new_task_res.tid;
     let mut process_inner = process.inner_exclusive_access();
@@ -86,18 +86,10 @@ pub fn sys_waittid(tid: usize) -> i32 {
 
 /// clone(220) 的线程语义：CLONE_VM|CLONE_THREAD 时创建同进程内的新线程。
 /// musl 的 __clone 在子线程里需要：sp = stack 参数、tp = tls 参数、a0 = 0。
-pub fn sys_clone_thread(flags: usize, stack: usize, _ptid: usize, tls: usize, _ctid: usize) -> isize {
+pub fn sys_clone_thread(flags: usize, stack: usize, ptid: usize, tls: usize, ctid: usize) -> isize {
     const CLONE_VM: usize = 0x100;
     if flags & CLONE_VM == 0 {
         return super::process::sys_fork();
-    }
-    {
-        use core::sync::atomic::{AtomicUsize, Ordering};
-        static N: AtomicUsize = AtomicUsize::new(0);
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        if n < 30 {
-            println!("[clone] count={} pid={} tid_in={} stack={:#x}", n, crate::task::current_process().getpid(), sys_gettid(), stack);
-        }
     }
     let task = current_task().unwrap();
     let process = task.process.upgrade().unwrap();
@@ -115,7 +107,7 @@ pub fn sys_clone_thread(flags: usize, stack: usize, _ptid: usize, tls: usize, _c
     };
     let new_task = Arc::new(TaskControlBlock::new_thread(Arc::clone(&process), ustack_base));
     add_task(Arc::clone(&new_task));
-    let new_task_inner = new_task.inner_exclusive_access();
+    let mut new_task_inner = new_task.inner_exclusive_access();
     let new_task_res = new_task_inner.res.as_ref().unwrap();
     let new_tid = new_task_res.tid;
     {
@@ -125,6 +117,20 @@ pub fn sys_clone_thread(flags: usize, stack: usize, _ptid: usize, tls: usize, _c
             tasks.push(None);
         }
         tasks[new_tid] = Some(Arc::clone(&new_task));
+    }
+    // CLONE_PARENT_SETTID：把子线程 tid 写给父线程
+    if flags & 0x0010_0000 != 0 && ptid != 0 {
+        let token = crate::task::current_user_token();
+        *crate::mm::translated_refmut(token, ptid as *mut i32) = new_tid as i32;
+    }
+    if flags & 0x0100_0000 != 0 && ctid != 0 {
+        // CLONE_CHILD_SETTID：在子线程内存里写入自己的 tid
+        let child_token = process.inner_exclusive_access().memory_set.token();
+        *crate::mm::translated_refmut(child_token, ctid as *mut i32) = new_tid as i32;
+    }
+    // CLONE_CHILD_CLEARTID：线程退出时由内核清零该地址（musl 的 pthread_join 依赖它）
+    if flags & 0x0020_0000 != 0 && ctid != 0 {
+        new_task_inner.clear_child_tid = ctid;
     }
     let new_cx = new_task_inner.get_trap_cx();
     *new_cx = parent_cx;

@@ -63,6 +63,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     let tid = task_inner.res.as_ref().unwrap().tid;
     // record exit code
     task_inner.exit_code = Some(exit_code);
+    let clear_child_tid = task_inner.clear_child_tid;
     task_inner.res = None;
     // here we do not remove the thread since we are still using the kstack
     // it will be deallocated when sys_waittid is called
@@ -135,7 +136,13 @@ pub fn exit_current_and_run_next(exit_code: i32) {
         // remove all tasks
         process_inner.tasks.clear();
     } else {
-        // 普通线程退出：从进程线程表摘除，TCB 交给延迟回收队列
+        // 普通线程退出：先按 CLONE_CHILD_CLEARTID 语义清零 tid 并唤醒 join 者
+        let cctid = clear_child_tid;
+        if cctid != 0 {
+            let token = process.inner_exclusive_access().memory_set.token();
+            *crate::mm::translated_refmut(token, cctid as *mut i32) = 0;
+        }
+        // 从进程线程表摘除，TCB 交给延迟回收队列
         let process = process.clone();
         let mut process_inner = process.inner_exclusive_access();
         if tid < process_inner.tasks.len() {

@@ -173,7 +173,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 5]) -> isize {
         SYSCALL_GET_TIME => sys_gettimeofday(args[0] as *mut u8),
         SYSCALL_BRK => sys_brk(args[0]),
         SYSCALL_MMAP => sys_mmap(args[1]),
-        SYSCALL_MUNMAP => sys_munmap(),
+        SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),
         SYSCALL_GETPID => sys_getpid(),
         SYSCALL_GETPPID => sys_getppid(),
         SYSCALL_FORK => sys_fork(),
