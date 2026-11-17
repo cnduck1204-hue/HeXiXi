@@ -133,12 +133,34 @@ pub fn trap_return() -> ! {
 #[no_mangle]
 pub fn trap_from_kernel() -> ! {
     use riscv::register::sepc;
-    let pid = crate::task::current_task()
+    // 裸输出：不依赖堆/格式化，避免在内存已损坏时二次 fault
+    fn raw_str(s: &str) {
+        for c in s.bytes() {
+            crate::sbi::console_putchar(c as usize);
+        }
+    }
+    fn raw_hex(v: usize) {
+        raw_str("0x");
+        let mut started = false;
+        for i in (0..16).rev() {
+            let d = (v >> (i * 4)) & 0xf;
+            if d != 0 || started || i == 0 {
+                started = true;
+                crate::sbi::console_putchar(if d < 10 { b'0' + d as u8 } else { b'a' + (d as u8 - 10) } as usize);
+            }
+        }
+    }
+    raw_str("\n[kfault] stval=");
+    raw_hex(stval::read());
+    raw_str(" sepc=");
+    raw_hex(sepc::read());
+    raw_str(" pid=");
+    raw_hex(crate::task::current_task()
         .map(|t| t.process.upgrade().map(|p| p.getpid()).unwrap_or(0))
-        .unwrap_or(0);
-    println!("[kfault] pid={} stval={:#x} sepc={:#x} last_syscall={}",
-        pid, stval::read(), sepc::read(),
-        crate::syscall::LAST_SYSCALL.load(core::sync::atomic::Ordering::Relaxed));
+        .unwrap_or(0));
+    raw_str(" last_sys=");
+    raw_hex(crate::syscall::LAST_SYSCALL.load(core::sync::atomic::Ordering::Relaxed));
+    raw_str("\n");
     panic!("a trap {:?} from kernel!", scause::read().cause());
 }
 
